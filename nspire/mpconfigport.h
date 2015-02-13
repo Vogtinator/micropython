@@ -71,6 +71,7 @@ extern const struct _mp_obj_module_t mp_module_nsp;
 #define MICROPY_PORT_BUILTIN_MODULES \
 	{ MP_OBJ_NEW_QSTR(MP_QSTR__os), (mp_obj_t) &mp_module_os }, \
 	{ MP_OBJ_NEW_QSTR(MP_QSTR_nsp), (mp_obj_t) &mp_module_nsp }
+	//
 
 typedef int mp_int_t;
 typedef unsigned int mp_uint_t;
@@ -86,6 +87,8 @@ extern const struct _mp_obj_fun_builtin_t mp_builtin_input_obj;
 extern const struct _mp_obj_fun_builtin_t mp_builtin_open_obj;
 #define MICROPY_PORT_BUILTINS \
     { MP_OBJ_NEW_QSTR(MP_QSTR_input), (mp_obj_t)&mp_builtin_input_obj }, \
-    { MP_OBJ_NEW_QSTR(MP_QSTR_open), (mp_obj_t)&mp_builtin_open_obj },
+    { MP_OBJ_NEW_QSTR(MP_QSTR_open), (mp_obj_t)&mp_builtin_open_obj } //, \
+    //{ MP_OBJ_NEW_QSTR(MP_QSTR_open), (mp_obj_t)&mp_builtin_round_obj}
+   // For the round function
 
 #include <alloca.h>
