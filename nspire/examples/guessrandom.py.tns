@@ -1,0 +1,43 @@
+from nsp import readRTC
+
+class RandomNumberGenerator:
+    #constructor
+    def __init__(self,seed=None):
+        self.randomints=[]
+        self.count=0
+        self.a=1664525
+        self.m=4294967296 # 2^32
+        if seed is None:
+            self.seed=readRTC()
+        else:
+            self.seed=seed
+    # rand function
+    def rand(self,a=None,b=None): 
+        if self.count==0:
+           # append X1=a*seed mod m
+           self.randomints.append((self.a*self.seed)%self.m)
+        else:
+	   # append Xn=a*Xn-1 mod m
+           self.randomints.append((self.a*self.randomints[-1])%self.m)
+	#increment the count
+        self.count+=1
+        if a is None and b is None: 
+            return self.randomints[-1]/self.m
+        else:
+            return a + (self.randomints[-1]/self.m) * (b-a)
+            
+random = RandomNumberGenerator()
+guess_number = int(random.rand(1,1000))
+user_guess = 0
+
+print("Welcome to the guessing game!" + "\n")
+
+while user_guess != guess_number:
+  global user_guess
+  user_guess = int(input("Try and guess the number:  "))
+  if user_guess > guess_number:
+    print("Too high" + "\n")
+  elif user_guess < guess_number:
+    print("Too low" + "\n")
+    
+print("You guessed the number!")  
