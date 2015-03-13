@@ -75,3 +75,13 @@ Q(dest_x)
 Q(dest_y)
 Q(dest_w)
 Q(dest_h)
+
+//possible future additions
+//Q(random)
+//Q(rand)     <- can't call it random because that's the name of a module?
+//Q(choice)
+//Q(randrange)
+//Q(seed)
+//Q(randint)
+//Q(shuffle)
+//Q(uniform)
