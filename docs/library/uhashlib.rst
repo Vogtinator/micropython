@@ -1,37 +1,57 @@
-:mod:`uhashlib` -- hashing algorithm
-====================================
+:mod:`uhashlib` -- hashing algorithms
+=====================================
 
 .. module:: uhashlib
-   :synopsis: hashing algorithm
+   :synopsis: hashing algorithms
 
-This module implements binary data hashing algorithms. Currently, it
-implements SHA256 algorithm. Choosing SHA256 was a deliberate choice,
-as a modern, cryptographically secure algorithm. This means that a
-single algorithm can cover both usecases of "any hash algorithm" and
-security-related usage, and thus save space omitting legacy algorithms
-like MD5 or SHA1.
+|see_cpython_module| :mod:`python:hashlib`.
+
+This module implements binary data hashing algorithms. The exact inventory
+of available algorithms depends on a board. Among the algorithms which may
+be implemented:
+
+* SHA256 - The current generation, modern hashing algorithm (of SHA2 series).
+  It is suitable for cryptographically-secure purposes. Included in the
+  MicroPython core and any board is recommended to provide this, unless
+  it has particular code size constraints.
+
+* SHA1 - A previous generation algorithm. Not recommended for new usages,
+  but SHA1 is a part of number of Internet standards and existing
+  applications, so boards targeting network connectivity and
+  interoperability will try to provide this.
+
+* MD5 - A legacy algorithm, not considered cryptographically secure. Only
+  selected boards, targeting interoperability with legacy applications,
+  will offer this.
 
 Constructors
 ------------
 
 .. class:: uhashlib.sha256([data])
 
-   Create a hasher object and optionally feed ``data`` into it.
+    Create an SHA256 hasher object and optionally feed ``data`` into it.
 
+.. class:: uhashlib.sha1([data])
+
+    Create an SHA1 hasher object and optionally feed ``data`` into it.
+
+.. class:: uhashlib.md5([data])
+
+    Create an MD5 hasher object and optionally feed ``data`` into it.
 
 Methods
 -------
 
-.. method:: sha256.update(data)
+.. method:: hash.update(data)
 
    Feed more binary data into hash.
 
-.. method:: sha256.digest()
+.. method:: hash.digest()
 
-   Return hash for all data passed thru hash, as a bytes object. After this
-   method is called, more data cannot be fed into hash any longer.
+   Return hash for all data passed through hash, as a bytes object. After this
+   method is called, more data cannot be fed into the hash any longer.
 
-.. method:: sha256.hexdigest()
+.. method:: hash.hexdigest()
 
-   This method is NOT implemented. Use ``ubinascii.hexlify(sha256.digest())``
-   to achieve similar effect.
+   This method is NOT implemented. Use ``ubinascii.hexlify(hash.digest())``
+   to achieve a similar effect.

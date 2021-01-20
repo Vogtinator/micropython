@@ -10,7 +10,7 @@ pyb.delay(1)
 
 start = pyb.millis()
 pyb.delay(17)
-print((pyb.millis() - start) // 5) # should print 3
+print((pyb.millis() - start) // 5)  # should print 3
 
 # test udelay
 
@@ -20,23 +20,20 @@ pyb.udelay(1)
 
 start = pyb.millis()
 pyb.udelay(17000)
-print((pyb.millis() - start) // 5) # should print 3
+print((pyb.millis() - start) // 5)  # should print 3
 
 # other
 
 pyb.disable_irq()
 pyb.enable_irq()
 
-print(pyb.freq())
-
 print(pyb.have_cdc())
-
-pyb.hid((0, 0, 0, 0)) # won't do anything
-
-pyb.rng()
 
 pyb.sync()
 
 print(len(pyb.unique_id()))
 
 pyb.wfi()
+
+pyb.fault_debug(True)
+pyb.fault_debug(False)

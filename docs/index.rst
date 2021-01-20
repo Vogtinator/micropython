@@ -1,19 +1,15 @@
-Micro Python documentation and references
-=========================================
+MicroPython documentation and references
+========================================
 
 .. toctree::
 
-   quickref.rst
-   general.rst
-   tutorial/index.rst
-   library/index.rst
-   hardware/index.rst
-   license.rst
-   contents.rst
-
-Indices and tables
-==================
-
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
+    library/index.rst
+    reference/index.rst
+    genrst/index.rst
+    develop/index.rst
+    license.rst
+    pyboard/quickref.rst
+    esp8266/quickref.rst
+    esp32/quickref.rst
+    wipy/quickref.rst
+    unix/quickref.rst

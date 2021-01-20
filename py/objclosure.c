@@ -1,5 +1,5 @@
 /*
- * This file is part of the Micro Python project, http://micropython.org/
+ * This file is part of the MicroPython project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
@@ -26,27 +26,22 @@
 
 #include <string.h>
 
-#include "mpconfig.h"
-#include "nlr.h"
-#include "misc.h"
-#include "qstr.h"
-#include "obj.h"
-#include "objtuple.h"
-#include "runtime.h"
+#include "py/obj.h"
+#include "py/runtime.h"
 
 typedef struct _mp_obj_closure_t {
     mp_obj_base_t base;
     mp_obj_t fun;
-    mp_uint_t n_closed;
+    size_t n_closed;
     mp_obj_t closed[];
 } mp_obj_closure_t;
 
-STATIC mp_obj_t closure_call(mp_obj_t self_in, mp_uint_t n_args, mp_uint_t n_kw, const mp_obj_t *args) {
-    mp_obj_closure_t *self = self_in;
+STATIC mp_obj_t closure_call(mp_obj_t self_in, size_t n_args, size_t n_kw, const mp_obj_t *args) {
+    mp_obj_closure_t *self = MP_OBJ_TO_PTR(self_in);
 
     // need to concatenate closed-over-vars and args
 
-    mp_uint_t n_total = self->n_closed + n_args + 2 * n_kw;
+    size_t n_total = self->n_closed + n_args + 2 * n_kw;
     if (n_total <= 5) {
         // use stack to allocate temporary args array
         mp_obj_t args2[5];
@@ -65,37 +60,39 @@ STATIC mp_obj_t closure_call(mp_obj_t self_in, mp_uint_t n_args, mp_uint_t n_kw,
 }
 
 #if MICROPY_ERROR_REPORTING == MICROPY_ERROR_REPORTING_DETAILED
-STATIC void closure_print(void (*print)(void *env, const char *fmt, ...), void *env, mp_obj_t o_in, mp_print_kind_t kind) {
-    mp_obj_closure_t *o = o_in;
-    print(env, "<closure ");
-    mp_obj_print_helper(print, env, o->fun, PRINT_REPR);
-    print(env, " at %p, n_closed=%u ", o, o->n_closed);
-    for (mp_uint_t i = 0; i < o->n_closed; i++) {
+STATIC void closure_print(const mp_print_t *print, mp_obj_t o_in, mp_print_kind_t kind) {
+    (void)kind;
+    mp_obj_closure_t *o = MP_OBJ_TO_PTR(o_in);
+    mp_print_str(print, "<closure ");
+    mp_obj_print_helper(print, o->fun, PRINT_REPR);
+    mp_printf(print, " at %p, n_closed=%u ", o, (int)o->n_closed);
+    for (size_t i = 0; i < o->n_closed; i++) {
         if (o->closed[i] == MP_OBJ_NULL) {
-            print(env, "(nil)");
+            mp_print_str(print, "(nil)");
         } else {
-            mp_obj_print_helper(print, env, o->closed[i], PRINT_REPR);
+            mp_obj_print_helper(print, o->closed[i], PRINT_REPR);
         }
-        print(env, " ");
+        mp_print_str(print, " ");
     }
-    print(env, ">");
+    mp_print_str(print, ">");
 }
 #endif
 
 const mp_obj_type_t closure_type = {
     { &mp_type_type },
+    .flags = MP_TYPE_FLAG_BINDS_SELF,
     .name = MP_QSTR_closure,
-#if MICROPY_ERROR_REPORTING == MICROPY_ERROR_REPORTING_DETAILED
+    #if MICROPY_ERROR_REPORTING == MICROPY_ERROR_REPORTING_DETAILED
     .print = closure_print,
-#endif
+    #endif
     .call = closure_call,
 };
 
-mp_obj_t mp_obj_new_closure(mp_obj_t fun, mp_uint_t n_closed_over, const mp_obj_t *closed) {
+mp_obj_t mp_obj_new_closure(mp_obj_t fun, size_t n_closed_over, const mp_obj_t *closed) {
     mp_obj_closure_t *o = m_new_obj_var(mp_obj_closure_t, mp_obj_t, n_closed_over);
     o->base.type = &closure_type;
     o->fun = fun;
     o->n_closed = n_closed_over;
     memcpy(o->closed, closed, n_closed_over * sizeof(mp_obj_t));
-    return o;
+    return MP_OBJ_FROM_PTR(o);
 }

@@ -1,5 +1,5 @@
 /*
- * This file is part of the Micro Python project, http://micropython.org/
+ * This file is part of the MicroPython project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
@@ -30,59 +30,15 @@ typedef float float_t;
 typedef union {
     float f;
     struct {
-        uint64_t m : 23;
-        uint64_t e : 8;
-        uint64_t s : 1;
+        uint32_t m : 23;
+        uint32_t e : 8;
+        uint32_t s : 1;
     };
 } float_s_t;
 
-typedef union {
-    double d;
-    struct {
-        uint64_t m : 52;
-        uint64_t e : 11;
-        uint64_t s : 1;
-    };
-} double_s_t;
-
-double __attribute__((pcs("aapcs"))) __aeabi_i2d(int32_t x) {
-    return (float)x;
-}
-
-double __attribute__((pcs("aapcs"))) __aeabi_f2d(float x) {
-    float_s_t fx={0};
-    double_s_t dx={0};
-
-    fx.f = x;
-    dx.s = (fx.s);
-    dx.e = (fx.e-127+1023) & 0x7FF;
-    dx.m = fx.m;
-    dx.m <<=(52-23); // left justify
-    return dx.d;
-}
-
-float __attribute__((pcs("aapcs"))) __aeabi_d2f(double x) {
-    float_s_t fx={0};
-    double_s_t dx={0};
-
-    dx.d = x;
-    fx.s = (dx.s);
-    fx.e = (dx.e-1023+127) & 0xFF;
-    fx.m = (dx.m>>(52-23)); // right justify
-    return fx.f;
-}
-
-double __aeabi_dmul(double x , double y) {
-    return 0.0;
-
-}
-
-float sqrtf(float x) {
-    asm volatile (
-            "vsqrt.f32  %[r], %[x]\n"
-            : [r] "=t" (x)
-            : [x] "t"  (x));
-    return x;
+int __signbitf(float f) {
+    float_s_t u = {.f = f};
+    return u.s;
 }
 
 #ifndef NDEBUG
@@ -97,29 +53,19 @@ float copysignf(float x, float y) {
 }
 #endif
 
-// some compilers define log2f in terms of logf
-#ifdef log2f
-#undef log2f
-#endif
-// some compilers have _M_LN2 defined in math.h, some don't
-#ifndef _M_LN2
-#define _M_LN2 (0.69314718055994530942)
-#endif
-float log2f(float x) { return logf(x) / (float)_M_LN2; }
-
-static const float _M_LN10 = 2.30258509299404; // 0x40135d8e
+static const float _M_LN10 = 2.30258509299404f; // 0x40135d8e
 float log10f(float x) { return logf(x) / (float)_M_LN10; }
 
-float tanhf(float x) { return sinhf(x) / coshf(x); }
-
-// TODO we need import these functions from some library (eg musl or newlib)
-float tgammaf(float x) { return 0.0; }
-float lgammaf(float x) { return 0.0; }
-float erff(float x) { return 0.0; }
-float erfcf(float x) { return 0.0; }
-float modff(float x, float *y) { return 0.0; }
-float frexpf(float x, int *exp) { return 0.0; }
-float ldexpf(float x, int exp) { return 0.0; }
+float tanhf(float x) {
+    int sign = 0;
+    if (x < 0) {
+        sign = 1;
+        x = -x;
+    }
+    x = expm1f(-2 * x);
+    x = x / (x + 2);
+    return sign ? x : -x;
+}
 
 /*****************************************************************************/
 /*****************************************************************************/
@@ -193,34 +139,34 @@ float scalbnf(float x, int n)
  */
 
 static const float
-bp[]   = {1.0, 1.5,},
-dp_h[] = { 0.0, 5.84960938e-01,}, /* 0x3f15c000 */
-dp_l[] = { 0.0, 1.56322085e-06,}, /* 0x35d1cfdc */
-two24  =  16777216.0,  /* 0x4b800000 */
-huge   =  1.0e30,
-tiny   =  1.0e-30,
+bp[]   = {1.0f, 1.5f,},
+dp_h[] = { 0.0f, 5.84960938e-01f,}, /* 0x3f15c000 */
+dp_l[] = { 0.0f, 1.56322085e-06f,}, /* 0x35d1cfdc */
+two24  =  16777216.0f,  /* 0x4b800000 */
+huge   =  1.0e30f,
+tiny   =  1.0e-30f,
 /* poly coefs for (3/2)*(log(x)-2s-2/3*s**3 */
-L1 =  6.0000002384e-01, /* 0x3f19999a */
-L2 =  4.2857143283e-01, /* 0x3edb6db7 */
-L3 =  3.3333334327e-01, /* 0x3eaaaaab */
-L4 =  2.7272811532e-01, /* 0x3e8ba305 */
-L5 =  2.3066075146e-01, /* 0x3e6c3255 */
-L6 =  2.0697501302e-01, /* 0x3e53f142 */
-P1 =  1.6666667163e-01, /* 0x3e2aaaab */
-P2 = -2.7777778450e-03, /* 0xbb360b61 */
-P3 =  6.6137559770e-05, /* 0x388ab355 */
-P4 = -1.6533901999e-06, /* 0xb5ddea0e */
-P5 =  4.1381369442e-08, /* 0x3331bb4c */
-lg2     =  6.9314718246e-01, /* 0x3f317218 */
-lg2_h   =  6.93145752e-01,   /* 0x3f317200 */
-lg2_l   =  1.42860654e-06,   /* 0x35bfbe8c */
-ovt     =  4.2995665694e-08, /* -(128-log2(ovfl+.5ulp)) */
-cp      =  9.6179670095e-01, /* 0x3f76384f =2/(3ln2) */
-cp_h    =  9.6191406250e-01, /* 0x3f764000 =12b cp */
-cp_l    = -1.1736857402e-04, /* 0xb8f623c6 =tail of cp_h */
-ivln2   =  1.4426950216e+00, /* 0x3fb8aa3b =1/ln2 */
-ivln2_h =  1.4426879883e+00, /* 0x3fb8aa00 =16b 1/ln2*/
-ivln2_l =  7.0526075433e-06; /* 0x36eca570 =1/ln2 tail*/
+L1 =  6.0000002384e-01f, /* 0x3f19999a */
+L2 =  4.2857143283e-01f, /* 0x3edb6db7 */
+L3 =  3.3333334327e-01f, /* 0x3eaaaaab */
+L4 =  2.7272811532e-01f, /* 0x3e8ba305 */
+L5 =  2.3066075146e-01f, /* 0x3e6c3255 */
+L6 =  2.0697501302e-01f, /* 0x3e53f142 */
+P1 =  1.6666667163e-01f, /* 0x3e2aaaab */
+P2 = -2.7777778450e-03f, /* 0xbb360b61 */
+P3 =  6.6137559770e-05f, /* 0x388ab355 */
+P4 = -1.6533901999e-06f, /* 0xb5ddea0e */
+P5 =  4.1381369442e-08f, /* 0x3331bb4c */
+lg2     =  6.9314718246e-01f, /* 0x3f317218 */
+lg2_h   =  6.93145752e-01f,   /* 0x3f317200 */
+lg2_l   =  1.42860654e-06f,   /* 0x35bfbe8c */
+ovt     =  4.2995665694e-08f, /* -(128-log2(ovfl+.5ulp)) */
+cp      =  9.6179670095e-01f, /* 0x3f76384f =2/(3ln2) */
+cp_h    =  9.6191406250e-01f, /* 0x3f764000 =12b cp */
+cp_l    = -1.1736857402e-04f, /* 0xb8f623c6 =tail of cp_h */
+ivln2   =  1.4426950216e+00f, /* 0x3fb8aa3b =1/ln2 */
+ivln2_h =  1.4426879883e+00f, /* 0x3fb8aa00 =16b 1/ln2*/
+ivln2_l =  7.0526075433e-06f; /* 0x36eca570 =1/ln2 tail*/
 
 float powf(float x, float y)
 {
@@ -457,7 +403,7 @@ float powf(float x, float y)
  */
 
 static const float
-half[2] = {0.5,-0.5},
+half[2] = {0.5f,-0.5f},
 ln2hi   = 6.9314575195e-1f,  /* 0x3f317200 */
 ln2lo   = 1.4286067653e-6f,  /* 0x35bfbe8e */
 invln2  = 1.4426950216e+0f,  /* 0x3fb8aa3b */
@@ -496,7 +442,7 @@ float expf(float x)
 	/* argument reduction */
 	if (hx > 0x3eb17218) {  /* if |x| > 0.5 ln2 */
 		if (hx > 0x3f851592)  /* if |x| > 1.5 ln2 */
-			k = invln2*x + half[sign];
+			k = (int)(invln2*x + half[sign]);
 		else
 			k = 1 - sign - sign;
 		hi = x - k*ln2hi;  /* k*ln2hi is exact here */
@@ -543,17 +489,17 @@ float expf(float x)
  */
 
 static const float
-o_threshold = 8.8721679688e+01, /* 0x42b17180 */
-ln2_hi      = 6.9313812256e-01, /* 0x3f317180 */
-ln2_lo      = 9.0580006145e-06, /* 0x3717f7d1 */
+o_threshold = 8.8721679688e+01f, /* 0x42b17180 */
+ln2_hi      = 6.9313812256e-01f, /* 0x3f317180 */
+ln2_lo      = 9.0580006145e-06f, /* 0x3717f7d1 */
 //invln2      = 1.4426950216e+00, /* 0x3fb8aa3b */
 /*
  * Domain [-0.34568, 0.34568], range ~[-6.694e-10, 6.696e-10]:
  * |6 / x * (1 + 2 * (1 / (exp(x) - 1) - 1 / x)) - q(x)| < 2**-30.04
  * Scaled coefficients: Qn_here = 2**n * Qn_for_q (see s_expm1.c):
  */
-Q1 = -3.3333212137e-2, /* -0x888868.0p-28 */
-Q2 =  1.5807170421e-3; /*  0xcf3010.0p-33 */
+Q1 = -3.3333212137e-2f, /* -0x888868.0p-28 */
+Q2 =  1.5807170421e-3f; /*  0xcf3010.0p-33 */
 
 float expm1f(float x)
 {
@@ -587,7 +533,7 @@ float expm1f(float x)
 				k = -1;
 			}
 		} else {
-			k  = invln2*x + (sign ? -0.5f : 0.5f);
+			k  = (int)(invln2*x + (sign ? -0.5f : 0.5f));
 			t  = k;
 			hi = x - t*ln2_hi;      /* t*ln2_hi is exact here */
 			lo = t*ln2_lo;

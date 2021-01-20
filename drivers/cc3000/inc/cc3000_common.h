@@ -165,15 +165,15 @@ extern int CC3000_EXPORT(errno);
 //*****************************************************************************
 //                  Compound Types
 //*****************************************************************************
-typedef INT32 time_t;
+typedef INT32 cc3000_time_t;
 typedef UINT32 clock_t;
 typedef INT32 suseconds_t;
 
-typedef struct timeval timeval;
+typedef struct cc3000_timeval cc3000_timeval;
 
-struct timeval 
+struct cc3000_timeval
 {
-    time_t         tv_sec;                  /* seconds */
+    cc3000_time_t  tv_sec;                  /* seconds */
     suseconds_t    tv_usec;                 /* microseconds */
 };
 

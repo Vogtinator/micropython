@@ -1,29 +1,42 @@
-import pyb
-from pyb import LED
+import os, pyb
 
-for i in range(4):
-    print(LED(i+1))
+machine = os.uname().machine
+if "PYBv1." in machine or "PYBLITEv1." in machine:
+    leds = [pyb.LED(i) for i in range(1, 5)]
+    pwm_leds = leds[2:]
+elif "PYBD" in machine:
+    leds = [pyb.LED(i) for i in range(1, 4)]
+    pwm_leds = []
+else:
+    print("SKIP")
+    raise SystemExit
 
-for i in range(4):
-    LED(i+1).on()
-pyb.delay(10)
-for i in range(4):
-    LED(i+1).off()
-pyb.delay(10)
-for i in range(4):
-    LED(i+1).toggle()
-pyb.delay(10)
-for i in range(4):
-    LED(i+1).intensity(0)
+# test printing
+for i in range(3):
+    print(leds[i])
 
-for i in range(256):
-    LED(4).intensity(i)
-    if LED(4).intensity() != i:
-        print('fail', i)
-    pyb.delay(1)
-for i in range(256):
-    LED(4).intensity(255 - i)
-    pyb.delay(1)
+# test on and off
+for l in leds:
+    l.on()
+    assert l.intensity() == 255
+    pyb.delay(100)
+    l.off()
+    assert l.intensity() == 0
+    pyb.delay(100)
 
-for i in range(4):
-    LED(i+1).off()
+# test toggle
+for l in 2 * leds:
+    l.toggle()
+    assert l.intensity() in (0, 255)
+    pyb.delay(100)
+
+# test intensity
+for l in pwm_leds:
+    for i in range(256):
+        l.intensity(i)
+        assert l.intensity() == i
+        pyb.delay(1)
+    for i in range(255, -1, -1):
+        l.intensity(i)
+        assert l.intensity() == i
+        pyb.delay(1)

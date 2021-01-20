@@ -1,5 +1,5 @@
 /*
- * This file is part of the Micro Python project, http://micropython.org/
+ * This file is part of the MicroPython project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
@@ -24,22 +24,25 @@
  * THE SOFTWARE.
  */
 
+// *FORMAT-OFF*
+
 #if __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Winitializer-overrides"
 #endif // __clang__
- 
-static void* entry_table[256] = {
+#if __GNUC__ >= 5
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Woverride-init"
+#endif // __GNUC__ >= 5
+
+static const void *const entry_table[256] = {
     [0 ... 255] = &&entry_default,
     [MP_BC_LOAD_CONST_FALSE] = &&entry_MP_BC_LOAD_CONST_FALSE,
     [MP_BC_LOAD_CONST_NONE] = &&entry_MP_BC_LOAD_CONST_NONE,
     [MP_BC_LOAD_CONST_TRUE] = &&entry_MP_BC_LOAD_CONST_TRUE,
-    [MP_BC_LOAD_CONST_ELLIPSIS] = &&entry_MP_BC_LOAD_CONST_ELLIPSIS,
     [MP_BC_LOAD_CONST_SMALL_INT] = &&entry_MP_BC_LOAD_CONST_SMALL_INT,
-    [MP_BC_LOAD_CONST_INT] = &&entry_MP_BC_LOAD_CONST_INT,
-    [MP_BC_LOAD_CONST_DEC] = &&entry_MP_BC_LOAD_CONST_DEC,
-    [MP_BC_LOAD_CONST_BYTES] = &&entry_MP_BC_LOAD_CONST_BYTES,
     [MP_BC_LOAD_CONST_STRING] = &&entry_MP_BC_LOAD_CONST_STRING,
+    [MP_BC_LOAD_CONST_OBJ] = &&entry_MP_BC_LOAD_CONST_OBJ,
     [MP_BC_LOAD_NULL] = &&entry_MP_BC_LOAD_NULL,
     [MP_BC_LOAD_FAST_N] = &&entry_MP_BC_LOAD_FAST_N,
     [MP_BC_LOAD_DEREF] = &&entry_MP_BC_LOAD_DEREF,
@@ -47,6 +50,7 @@ static void* entry_table[256] = {
     [MP_BC_LOAD_GLOBAL] = &&entry_MP_BC_LOAD_GLOBAL,
     [MP_BC_LOAD_ATTR] = &&entry_MP_BC_LOAD_ATTR,
     [MP_BC_LOAD_METHOD] = &&entry_MP_BC_LOAD_METHOD,
+    [MP_BC_LOAD_SUPER_METHOD] = &&entry_MP_BC_LOAD_SUPER_METHOD,
     [MP_BC_LOAD_BUILD_CLASS] = &&entry_MP_BC_LOAD_BUILD_CLASS,
     [MP_BC_LOAD_SUBSCR] = &&entry_MP_BC_LOAD_SUBSCR,
     [MP_BC_STORE_FAST_N] = &&entry_MP_BC_STORE_FAST_N,
@@ -76,19 +80,20 @@ static void* entry_table[256] = {
     [MP_BC_SETUP_FINALLY] = &&entry_MP_BC_SETUP_FINALLY,
     [MP_BC_END_FINALLY] = &&entry_MP_BC_END_FINALLY,
     [MP_BC_GET_ITER] = &&entry_MP_BC_GET_ITER,
+    [MP_BC_GET_ITER_STACK] = &&entry_MP_BC_GET_ITER_STACK,
     [MP_BC_FOR_ITER] = &&entry_MP_BC_FOR_ITER,
-    [MP_BC_POP_BLOCK] = &&entry_MP_BC_POP_BLOCK,
-    [MP_BC_POP_EXCEPT] = &&entry_MP_BC_POP_EXCEPT,
-    [MP_BC_NOT] = &&entry_MP_BC_NOT,
+    [MP_BC_POP_EXCEPT_JUMP] = &&entry_MP_BC_POP_EXCEPT_JUMP,
     [MP_BC_BUILD_TUPLE] = &&entry_MP_BC_BUILD_TUPLE,
     [MP_BC_BUILD_LIST] = &&entry_MP_BC_BUILD_LIST,
-    [MP_BC_LIST_APPEND] = &&entry_MP_BC_LIST_APPEND,
     [MP_BC_BUILD_MAP] = &&entry_MP_BC_BUILD_MAP,
     [MP_BC_STORE_MAP] = &&entry_MP_BC_STORE_MAP,
-    [MP_BC_MAP_ADD] = &&entry_MP_BC_MAP_ADD,
+    #if MICROPY_PY_BUILTINS_SET
     [MP_BC_BUILD_SET] = &&entry_MP_BC_BUILD_SET,
-    [MP_BC_SET_ADD] = &&entry_MP_BC_SET_ADD,
+    #endif
+    #if MICROPY_PY_BUILTINS_SLICE
     [MP_BC_BUILD_SLICE] = &&entry_MP_BC_BUILD_SLICE,
+    #endif
+    [MP_BC_STORE_COMP] = &&entry_MP_BC_STORE_COMP,
     [MP_BC_UNPACK_SEQUENCE] = &&entry_MP_BC_UNPACK_SEQUENCE,
     [MP_BC_UNPACK_EX] = &&entry_MP_BC_UNPACK_EX,
     [MP_BC_MAKE_FUNCTION] = &&entry_MP_BC_MAKE_FUNCTION,
@@ -100,19 +105,24 @@ static void* entry_table[256] = {
     [MP_BC_CALL_METHOD] = &&entry_MP_BC_CALL_METHOD,
     [MP_BC_CALL_METHOD_VAR_KW] = &&entry_MP_BC_CALL_METHOD_VAR_KW,
     [MP_BC_RETURN_VALUE] = &&entry_MP_BC_RETURN_VALUE,
-    [MP_BC_RAISE_VARARGS] = &&entry_MP_BC_RAISE_VARARGS,
+    [MP_BC_RAISE_LAST] = &&entry_MP_BC_RAISE_LAST,
+    [MP_BC_RAISE_OBJ] = &&entry_MP_BC_RAISE_OBJ,
+    [MP_BC_RAISE_FROM] = &&entry_MP_BC_RAISE_FROM,
     [MP_BC_YIELD_VALUE] = &&entry_MP_BC_YIELD_VALUE,
     [MP_BC_YIELD_FROM] = &&entry_MP_BC_YIELD_FROM,
     [MP_BC_IMPORT_NAME] = &&entry_MP_BC_IMPORT_NAME,
     [MP_BC_IMPORT_FROM] = &&entry_MP_BC_IMPORT_FROM,
     [MP_BC_IMPORT_STAR] = &&entry_MP_BC_IMPORT_STAR,
-    [MP_BC_LOAD_CONST_SMALL_INT_MULTI ... MP_BC_LOAD_CONST_SMALL_INT_MULTI + 63] = &&entry_MP_BC_LOAD_CONST_SMALL_INT_MULTI,
-    [MP_BC_LOAD_FAST_MULTI ... MP_BC_LOAD_FAST_MULTI + 15] = &&entry_MP_BC_LOAD_FAST_MULTI,
-    [MP_BC_STORE_FAST_MULTI ... MP_BC_STORE_FAST_MULTI + 15] = &&entry_MP_BC_STORE_FAST_MULTI,
-    [MP_BC_UNARY_OP_MULTI ... MP_BC_UNARY_OP_MULTI + 4] = &&entry_MP_BC_UNARY_OP_MULTI,
-    [MP_BC_BINARY_OP_MULTI ... MP_BC_BINARY_OP_MULTI + 34] = &&entry_MP_BC_BINARY_OP_MULTI,
+    [MP_BC_LOAD_CONST_SMALL_INT_MULTI ... MP_BC_LOAD_CONST_SMALL_INT_MULTI + MP_BC_LOAD_CONST_SMALL_INT_MULTI_NUM - 1] = &&entry_MP_BC_LOAD_CONST_SMALL_INT_MULTI,
+    [MP_BC_LOAD_FAST_MULTI ... MP_BC_LOAD_FAST_MULTI + MP_BC_LOAD_FAST_MULTI_NUM - 1] = &&entry_MP_BC_LOAD_FAST_MULTI,
+    [MP_BC_STORE_FAST_MULTI ... MP_BC_STORE_FAST_MULTI + MP_BC_STORE_FAST_MULTI_NUM - 1] = &&entry_MP_BC_STORE_FAST_MULTI,
+    [MP_BC_UNARY_OP_MULTI ... MP_BC_UNARY_OP_MULTI + MP_BC_UNARY_OP_MULTI_NUM - 1] = &&entry_MP_BC_UNARY_OP_MULTI,
+    [MP_BC_BINARY_OP_MULTI ... MP_BC_BINARY_OP_MULTI + MP_BC_BINARY_OP_MULTI_NUM - 1] = &&entry_MP_BC_BINARY_OP_MULTI,
 };
 
 #if __clang__
 #pragma clang diagnostic pop
 #endif // __clang__
+#if __GNUC__ >= 5
+#pragma GCC diagnostic pop
+#endif // __GNUC__ >= 5

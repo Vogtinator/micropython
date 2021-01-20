@@ -1,5 +1,5 @@
 /*
- * This file is part of the Micro Python project, http://micropython.org/
+ * This file is part of the MicroPython project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
@@ -24,25 +24,22 @@
  * THE SOFTWARE.
  */
 
-#include "mpconfig.h"
-#include "misc.h"
-#include "qstr.h"
-#include "obj.h"
-#include "builtin.h"
+#include "py/builtin.h"
 
 #if MICROPY_PY_ARRAY
 
-STATIC const mp_map_elem_t mp_module_array_globals_table[] = {
-    { MP_OBJ_NEW_QSTR(MP_QSTR___name__), MP_OBJ_NEW_QSTR(MP_QSTR_array) },
-    { MP_OBJ_NEW_QSTR(MP_QSTR_array), (mp_obj_t)&mp_type_array },
+STATIC const mp_rom_map_elem_t mp_module_array_globals_table[] = {
+    { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_uarray) },
+    { MP_ROM_QSTR(MP_QSTR_array), MP_ROM_PTR(&mp_type_array) },
 };
 
 STATIC MP_DEFINE_CONST_DICT(mp_module_array_globals, mp_module_array_globals_table);
 
-const mp_obj_module_t mp_module_array = {
+const mp_obj_module_t mp_module_uarray = {
     .base = { &mp_type_module },
-    .name = MP_QSTR_array,
-    .globals = (mp_obj_dict_t*)&mp_module_array_globals,
+    .globals = (mp_obj_dict_t *)&mp_module_array_globals,
 };
+
+MP_REGISTER_MODULE(MP_QSTR_uarray, mp_module_uarray, MICROPY_PY_ARRAY);
 
 #endif

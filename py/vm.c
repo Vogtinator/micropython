@@ -1,10 +1,10 @@
 /*
- * This file is part of the Micro Python project, http://micropython.org/
+ * This file is part of the MicroPython project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
- * Copyright (c) 2013, 2014 Damien P. George
- * Copyright (c) 2014 Paul Sokolovsky
+ * Copyright (c) 2013-2019 Damien P. George
+ * Copyright (c) 2014-2015 Paul Sokolovsky
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -29,19 +29,17 @@
 #include <string.h>
 #include <assert.h>
 
-#include "mpconfig.h"
-#include "nlr.h"
-#include "misc.h"
-#include "qstr.h"
-#include "obj.h"
-#include "emitglue.h"
-#include "runtime.h"
-#include "bc0.h"
-#include "bc.h"
-#include "objgenerator.h"
+#include "py/emitglue.h"
+#include "py/objtype.h"
+#include "py/runtime.h"
+#include "py/bc0.h"
+#include "py/bc.h"
+#include "py/profile.h"
+
+// *FORMAT-OFF*
 
 #if 0
-#define TRACE(ip) printf("sp=" INT_FMT " ", sp - code_state->sp); mp_bytecode_print2(ip, 1);
+#define TRACE(ip) printf("sp=%d ", (int)(sp - &code_state->state[0] + 1)); mp_bytecode_print2(&mp_plat_print, ip, 1, code_state->fun_bc->const_table);
 #else
 #define TRACE(ip)
 #endif
@@ -53,67 +51,175 @@
 // top element.
 // Exception stack also grows up, top element is also pointed at.
 
-// Exception stack unwind reasons (WHY_* in CPython-speak)
-// TODO perhaps compress this to RETURN=0, JUMP>0, with number of unwinds
-// left to do encoded in the JUMP number
-typedef enum {
-    UNWIND_RETURN = 1,
-    UNWIND_JUMP,
-} mp_unwind_reason_t;
-
 #define DECODE_UINT \
     mp_uint_t unum = 0; \
     do { \
         unum = (unum << 7) + (*ip & 0x7f); \
     } while ((*ip++ & 0x80) != 0)
-#define DECODE_ULABEL mp_uint_t ulab = (ip[0] | (ip[1] << 8)); ip += 2
-#define DECODE_SLABEL mp_uint_t slab = (ip[0] | (ip[1] << 8)) - 0x8000; ip += 2
+#define DECODE_ULABEL size_t ulab = (ip[0] | (ip[1] << 8)); ip += 2
+#define DECODE_SLABEL size_t slab = (ip[0] | (ip[1] << 8)) - 0x8000; ip += 2
+
+#if MICROPY_PERSISTENT_CODE
+
+#define DECODE_QSTR \
+    qstr qst = ip[0] | ip[1] << 8; \
+    ip += 2;
+#define DECODE_PTR \
+    DECODE_UINT; \
+    void *ptr = (void*)(uintptr_t)code_state->fun_bc->const_table[unum]
+#define DECODE_OBJ \
+    DECODE_UINT; \
+    mp_obj_t obj = (mp_obj_t)code_state->fun_bc->const_table[unum]
+
+#else
+
 #define DECODE_QSTR qstr qst = 0; \
     do { \
         qst = (qst << 7) + (*ip & 0x7f); \
     } while ((*ip++ & 0x80) != 0)
 #define DECODE_PTR \
-    ip = (byte*)(((mp_uint_t)ip + sizeof(mp_uint_t) - 1) & (~(sizeof(mp_uint_t) - 1))); /* align ip */ \
-    void *ptr = (void*)*(mp_uint_t*)ip; \
-    ip += sizeof(mp_uint_t)
+    ip = (byte*)MP_ALIGN(ip, sizeof(void*)); \
+    void *ptr = *(void**)ip; \
+    ip += sizeof(void*)
+#define DECODE_OBJ \
+    ip = (byte*)MP_ALIGN(ip, sizeof(mp_obj_t)); \
+    mp_obj_t obj = *(mp_obj_t*)ip; \
+    ip += sizeof(mp_obj_t)
+
+#endif
+
 #define PUSH(val) *++sp = (val)
 #define POP() (*sp--)
 #define TOP() (*sp)
 #define SET_TOP(val) *sp = (val)
 
-#define PUSH_EXC_BLOCK() do { \
+#if MICROPY_PY_SYS_EXC_INFO
+#define CLEAR_SYS_EXC_INFO() MP_STATE_VM(cur_exception) = NULL;
+#else
+#define CLEAR_SYS_EXC_INFO()
+#endif
+
+#define PUSH_EXC_BLOCK(with_or_finally) do { \
     DECODE_ULABEL; /* except labels are always forward */ \
     ++exc_sp; \
-    exc_sp->opcode = *code_state->ip; \
     exc_sp->handler = ip + ulab; \
-    exc_sp->val_sp = MP_TAGPTR_MAKE(sp, currently_in_except_block); \
-    exc_sp->prev_exc = MP_OBJ_NULL; \
-    currently_in_except_block = 0; /* in a try block now */ \
+    exc_sp->val_sp = MP_TAGPTR_MAKE(sp, ((with_or_finally) << 1)); \
+    exc_sp->prev_exc = NULL; \
 } while (0)
 
 #define POP_EXC_BLOCK() \
-    currently_in_except_block = MP_TAGPTR_TAG(exc_sp->val_sp); /* restore previous state */ \
-    exc_sp--; /* pop back to previous exception handler */
+    exc_sp--; /* pop back to previous exception handler */ \
+    CLEAR_SYS_EXC_INFO() /* just clear sys.exc_info(), not compliant, but it shouldn't be used in 1st place */
+
+#define CANCEL_ACTIVE_FINALLY(sp) do { \
+    if (mp_obj_is_small_int(sp[-1])) { \
+        /* Stack: (..., prev_dest_ip, prev_cause, dest_ip) */ \
+        /* Cancel the unwind through the previous finally, replace with current one */ \
+        sp[-2] = sp[0]; \
+        sp -= 2; \
+    } else { \
+        assert(sp[-1] == mp_const_none || mp_obj_is_exception_instance(sp[-1])); \
+        /* Stack: (..., None/exception, dest_ip) */ \
+        /* Silence the finally's exception value (may be None or an exception) */ \
+        sp[-1] = sp[0]; \
+        --sp; \
+    } \
+} while (0)
+
+#if MICROPY_PY_SYS_SETTRACE
+
+#define FRAME_SETUP() do { \
+    assert(code_state != code_state->prev_state); \
+    MP_STATE_THREAD(current_code_state) = code_state; \
+    assert(code_state != code_state->prev_state); \
+} while(0)
+
+#define FRAME_ENTER() do { \
+    assert(code_state != code_state->prev_state); \
+    code_state->prev_state = MP_STATE_THREAD(current_code_state); \
+    assert(code_state != code_state->prev_state); \
+    if (!mp_prof_is_executing) { \
+        mp_prof_frame_enter(code_state); \
+    } \
+} while(0)
+
+#define FRAME_LEAVE() do { \
+    assert(code_state != code_state->prev_state); \
+    MP_STATE_THREAD(current_code_state) = code_state->prev_state; \
+    assert(code_state != code_state->prev_state); \
+} while(0)
+
+#define FRAME_UPDATE() do { \
+    assert(MP_STATE_THREAD(current_code_state) == code_state); \
+    if (!mp_prof_is_executing) { \
+        code_state->frame = MP_OBJ_TO_PTR(mp_prof_frame_update(code_state)); \
+    } \
+} while(0)
+
+#define TRACE_TICK(current_ip, current_sp, is_exception) do { \
+    assert(code_state != code_state->prev_state); \
+    assert(MP_STATE_THREAD(current_code_state) == code_state); \
+    if (!mp_prof_is_executing && code_state->frame && MP_STATE_THREAD(prof_trace_callback)) { \
+        MP_PROF_INSTR_DEBUG_PRINT(code_state->ip); \
+    } \
+    if (!mp_prof_is_executing && code_state->frame && code_state->frame->callback) { \
+        mp_prof_instr_tick(code_state, is_exception); \
+    } \
+} while(0)
+
+#else // MICROPY_PY_SYS_SETTRACE
+#define FRAME_SETUP()
+#define FRAME_ENTER()
+#define FRAME_LEAVE()
+#define FRAME_UPDATE()
+#define TRACE_TICK(current_ip, current_sp, is_exception)
+#endif // MICROPY_PY_SYS_SETTRACE
+
+#if MICROPY_OPT_CACHE_MAP_LOOKUP_IN_BYTECODE
+static inline mp_map_elem_t *mp_map_cached_lookup(mp_map_t *map, qstr qst, uint8_t *idx_cache) {
+    size_t idx = *idx_cache;
+    mp_obj_t key = MP_OBJ_NEW_QSTR(qst);
+    mp_map_elem_t *elem = NULL;
+    if (idx < map->alloc && map->table[idx].key == key) {
+        elem = &map->table[idx];
+    } else {
+        elem = mp_map_lookup(map, key, MP_MAP_LOOKUP);
+        if (elem != NULL) {
+            *idx_cache = (elem - &map->table[0]) & 0xff;
+        }
+    }
+    return elem;
+}
+#endif
 
 // fastn has items in reverse order (fastn[0] is local[0], fastn[-1] is local[1], etc)
 // sp points to bottom of stack which grows up
 // returns:
 //  MP_VM_RETURN_NORMAL, sp valid, return value in *sp
 //  MP_VM_RETURN_YIELD, ip, sp valid, yielded value in *sp
-//  MP_VM_RETURN_EXCEPTION, exception in fastn[0]
-mp_vm_return_kind_t mp_execute_bytecode(mp_code_state *code_state, volatile mp_obj_t inject_exc) {
+//  MP_VM_RETURN_EXCEPTION, exception in state[0]
+mp_vm_return_kind_t mp_execute_bytecode(mp_code_state_t *code_state, volatile mp_obj_t inject_exc) {
+#define SELECTIVE_EXC_IP (0)
+#if SELECTIVE_EXC_IP
+#define MARK_EXC_IP_SELECTIVE() { code_state->ip = ip; } /* stores ip 1 byte past last opcode */
+#define MARK_EXC_IP_GLOBAL()
+#else
+#define MARK_EXC_IP_SELECTIVE()
+#define MARK_EXC_IP_GLOBAL() { code_state->ip = ip; } /* stores ip pointing to last opcode */
+#endif
 #if MICROPY_OPT_COMPUTED_GOTO
-    #include "vmentrytable.h"
+    #include "py/vmentrytable.h"
     #define DISPATCH() do { \
         TRACE(ip); \
-        code_state->ip = ip; \
+        MARK_EXC_IP_GLOBAL(); \
+        TRACE_TICK(ip, sp, false); \
         goto *entry_table[*ip++]; \
-    } while(0)
+    } while (0)
     #define DISPATCH_WITH_PEND_EXC_CHECK() goto pending_exception_check
     #define ENTRY(op) entry_##op
     #define ENTRY_DEFAULT entry_default
 #else
-    #define DISPATCH() break
+    #define DISPATCH() goto dispatch_loop
     #define DISPATCH_WITH_PEND_EXC_CHECK() goto pending_exception_check
     #define ENTRY(op) case op
     #define ENTRY_DEFAULT default
@@ -123,15 +229,35 @@ mp_vm_return_kind_t mp_execute_bytecode(mp_code_state *code_state, volatile mp_o
     // sees that it's possible for us to jump from the dispatch loop to the exception
     // handler.  Without this, the code may have a different stack layout in the dispatch
     // loop and the exception handler, leading to very obscure bugs.
-    #define RAISE(o) do { nlr_pop(); nlr.ret_val = o; goto exception_handler; } while(0)
+    #define RAISE(o) do { nlr_pop(); nlr.ret_val = MP_OBJ_TO_PTR(o); goto exception_handler; } while (0)
+
+#if MICROPY_STACKLESS
+run_code_state: ;
+#endif
+FRAME_ENTER();
+
+#if MICROPY_STACKLESS
+run_code_state_from_return: ;
+#endif
+FRAME_SETUP();
 
     // Pointers which are constant for particular invocation of mp_execute_bytecode()
-    mp_obj_t *const fastn = &code_state->state[code_state->n_state - 1];
-    mp_exc_stack_t *const exc_stack = (mp_exc_stack_t*)(code_state->state + code_state->n_state);
+    mp_obj_t * /*const*/ fastn;
+    mp_exc_stack_t * /*const*/ exc_stack;
+    {
+        size_t n_state = code_state->n_state;
+        fastn = &code_state->state[n_state - 1];
+        exc_stack = (mp_exc_stack_t*)(code_state->state + n_state);
+    }
 
     // variables that are visible to the exception handler (declared volatile)
-    volatile bool currently_in_except_block = MP_TAGPTR_TAG(code_state->exc_sp); // 0 or 1, to detect nested exceptions
-    mp_exc_stack_t *volatile exc_sp = MP_TAGPTR_PTR(code_state->exc_sp); // stack grows up, exc_sp points to top of stack
+    mp_exc_stack_t *volatile exc_sp = MP_CODE_STATE_EXC_SP_IDX_TO_PTR(exc_stack, code_state->exc_sp_idx); // stack grows up, exc_sp points to top of stack
+
+    #if MICROPY_PY_THREAD_GIL && MICROPY_PY_THREAD_GIL_VM_DIVISOR
+    // This needs to be volatile and outside the VM loop so it persists across handling
+    // of any exceptions.  Otherwise it's possible that the VM never gives up the GIL.
+    volatile int gil_divisor = MICROPY_PY_THREAD_GIL_VM_DIVISOR;
+    #endif
 
     // outer exception handling loop
     for (;;) {
@@ -142,9 +268,10 @@ outer_dispatch_loop:
             const byte *ip = code_state->ip;
             mp_obj_t *sp = code_state->sp;
             mp_obj_t obj_shared;
+            MICROPY_VM_HOOK_INIT
 
             // If we have exception to inject, now that we finish setting up
-            // execution context, raise it. This works as if RAISE_VARARGS
+            // execution context, raise it. This works as if MP_BC_RAISE_OBJ
             // bytecode was executed.
             // Injecting exc into yield from generator is a special case,
             // handled by MP_BC_YIELD_FROM itself
@@ -162,7 +289,8 @@ dispatch_loop:
                 DISPATCH();
 #else
                 TRACE(ip);
-                code_state->ip = ip;
+                MARK_EXC_IP_GLOBAL();
+                TRACE_TICK(ip, sp, false);
                 switch (*ip++) {
 #endif
 
@@ -178,10 +306,6 @@ dispatch_loop:
                     PUSH(mp_const_true);
                     DISPATCH();
 
-                ENTRY(MP_BC_LOAD_CONST_ELLIPSIS):
-                    PUSH((mp_obj_t)&mp_const_ellipsis_obj);
-                    DISPATCH();
-
                 ENTRY(MP_BC_LOAD_CONST_SMALL_INT): {
                     mp_int_t num = 0;
                     if ((ip[0] & 0x40) != 0) {
@@ -195,27 +319,15 @@ dispatch_loop:
                     DISPATCH();
                 }
 
-                ENTRY(MP_BC_LOAD_CONST_INT): {
-                    DECODE_QSTR;
-                    PUSH(mp_load_const_int(qst));
-                    DISPATCH();
-                }
-
-                ENTRY(MP_BC_LOAD_CONST_DEC): {
-                    DECODE_QSTR;
-                    PUSH(mp_load_const_dec(qst));
-                    DISPATCH();
-                }
-
-                ENTRY(MP_BC_LOAD_CONST_BYTES): {
-                    DECODE_QSTR;
-                    PUSH(mp_load_const_bytes(qst));
-                    DISPATCH();
-                }
-
                 ENTRY(MP_BC_LOAD_CONST_STRING): {
                     DECODE_QSTR;
-                    PUSH(mp_load_const_str(qst));
+                    PUSH(MP_OBJ_NEW_QSTR(qst));
+                    DISPATCH();
+                }
+
+                ENTRY(MP_BC_LOAD_CONST_OBJ): {
+                    DECODE_OBJ;
+                    PUSH(obj);
                     DISPATCH();
                 }
 
@@ -229,7 +341,8 @@ dispatch_loop:
                     load_check:
                     if (obj_shared == MP_OBJ_NULL) {
                         local_name_error: {
-                            mp_obj_t obj = mp_obj_new_exception_msg(&mp_type_NameError, "local variable referenced before assignment");
+                            MARK_EXC_IP_SELECTIVE();
+                            mp_obj_t obj = mp_obj_new_exception_msg(&mp_type_NameError, MP_ERROR_TEXT("local variable referenced before assignment"));
                             RAISE(obj);
                         }
                     }
@@ -243,36 +356,108 @@ dispatch_loop:
                     goto load_check;
                 }
 
+                #if !MICROPY_OPT_CACHE_MAP_LOOKUP_IN_BYTECODE
                 ENTRY(MP_BC_LOAD_NAME): {
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_QSTR;
                     PUSH(mp_load_name(qst));
                     DISPATCH();
                 }
+                #else
+                ENTRY(MP_BC_LOAD_NAME): {
+                    MARK_EXC_IP_SELECTIVE();
+                    DECODE_QSTR;
+                    mp_map_elem_t *elem = mp_map_cached_lookup(&mp_locals_get()->map, qst, (uint8_t*)ip);
+                    mp_obj_t obj;
+                    if (elem != NULL) {
+                        obj = elem->value;
+                    } else {
+                        obj = mp_load_name(qst);
+                    }
+                    PUSH(obj);
+                    ip++;
+                    DISPATCH();
+                }
+                #endif
 
+                #if !MICROPY_OPT_CACHE_MAP_LOOKUP_IN_BYTECODE
                 ENTRY(MP_BC_LOAD_GLOBAL): {
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_QSTR;
                     PUSH(mp_load_global(qst));
                     DISPATCH();
                 }
+                #else
+                ENTRY(MP_BC_LOAD_GLOBAL): {
+                    MARK_EXC_IP_SELECTIVE();
+                    DECODE_QSTR;
+                    mp_map_elem_t *elem = mp_map_cached_lookup(&mp_globals_get()->map, qst, (uint8_t*)ip);
+                    mp_obj_t obj;
+                    if (elem != NULL) {
+                        obj = elem->value;
+                    } else {
+                        obj = mp_load_global(qst);
+                    }
+                    PUSH(obj);
+                    ip++;
+                    DISPATCH();
+                }
+                #endif
 
+                #if !MICROPY_OPT_CACHE_MAP_LOOKUP_IN_BYTECODE
                 ENTRY(MP_BC_LOAD_ATTR): {
+                    FRAME_UPDATE();
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_QSTR;
                     SET_TOP(mp_load_attr(TOP(), qst));
                     DISPATCH();
                 }
+                #else
+                ENTRY(MP_BC_LOAD_ATTR): {
+                    FRAME_UPDATE();
+                    MARK_EXC_IP_SELECTIVE();
+                    DECODE_QSTR;
+                    mp_obj_t top = TOP();
+                    mp_map_elem_t *elem = NULL;
+                    if (mp_obj_is_instance_type(mp_obj_get_type(top))) {
+                        mp_obj_instance_t *self = MP_OBJ_TO_PTR(top);
+                        elem = mp_map_cached_lookup(&self->members, qst, (uint8_t*)ip);
+                    }
+                    mp_obj_t obj;
+                    if (elem != NULL) {
+                        obj = elem->value;
+                    } else {
+                        obj = mp_load_attr(top, qst);
+                    }
+                    SET_TOP(obj);
+                    ip++;
+                    DISPATCH();
+                }
+                #endif
 
                 ENTRY(MP_BC_LOAD_METHOD): {
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_QSTR;
                     mp_load_method(*sp, qst, sp);
                     sp += 1;
                     DISPATCH();
                 }
 
+                ENTRY(MP_BC_LOAD_SUPER_METHOD): {
+                    MARK_EXC_IP_SELECTIVE();
+                    DECODE_QSTR;
+                    sp -= 1;
+                    mp_load_super_method(qst, sp - 1);
+                    DISPATCH();
+                }
+
                 ENTRY(MP_BC_LOAD_BUILD_CLASS):
+                    MARK_EXC_IP_SELECTIVE();
                     PUSH(mp_load_build_class());
                     DISPATCH();
 
                 ENTRY(MP_BC_LOAD_SUBSCR): {
+                    MARK_EXC_IP_SELECTIVE();
                     mp_obj_t index = POP();
                     SET_TOP(mp_obj_subscr(TOP(), index, MP_OBJ_SENTINEL));
                     DISPATCH();
@@ -291,30 +476,63 @@ dispatch_loop:
                 }
 
                 ENTRY(MP_BC_STORE_NAME): {
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_QSTR;
                     mp_store_name(qst, POP());
                     DISPATCH();
                 }
 
                 ENTRY(MP_BC_STORE_GLOBAL): {
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_QSTR;
                     mp_store_global(qst, POP());
                     DISPATCH();
                 }
 
+                #if !MICROPY_OPT_CACHE_MAP_LOOKUP_IN_BYTECODE
                 ENTRY(MP_BC_STORE_ATTR): {
+                    FRAME_UPDATE();
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_QSTR;
                     mp_store_attr(sp[0], qst, sp[-1]);
                     sp -= 2;
                     DISPATCH();
                 }
+                #else
+                // This caching code works with MICROPY_PY_BUILTINS_PROPERTY and/or
+                // MICROPY_PY_DESCRIPTORS enabled because if the attr exists in
+                // self->members then it can't be a property or have descriptors.  A
+                // consequence of this is that we can't use MP_MAP_LOOKUP_ADD_IF_NOT_FOUND
+                // in the fast-path below, because that store could override a property.
+                ENTRY(MP_BC_STORE_ATTR): {
+                    FRAME_UPDATE();
+                    MARK_EXC_IP_SELECTIVE();
+                    DECODE_QSTR;
+                    mp_map_elem_t *elem = NULL;
+                    mp_obj_t top = TOP();
+                    if (mp_obj_is_instance_type(mp_obj_get_type(top)) && sp[-1] != MP_OBJ_NULL) {
+                        mp_obj_instance_t *self = MP_OBJ_TO_PTR(top);
+                        elem = mp_map_cached_lookup(&self->members, qst, (uint8_t*)ip);
+                    }
+                    if (elem != NULL) {
+                        elem->value = sp[-1];
+                    } else {
+                        mp_store_attr(sp[0], qst, sp[-1]);
+                    }
+                    sp -= 2;
+                    ip++;
+                    DISPATCH();
+                }
+                #endif
 
                 ENTRY(MP_BC_STORE_SUBSCR):
+                    MARK_EXC_IP_SELECTIVE();
                     mp_obj_subscr(sp[-1], sp[0], sp[-2]);
                     sp -= 3;
                     DISPATCH();
 
                 ENTRY(MP_BC_DELETE_FAST): {
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_UINT;
                     if (fastn[-unum] == MP_OBJ_NULL) {
                         goto local_name_error;
@@ -324,6 +542,7 @@ dispatch_loop:
                 }
 
                 ENTRY(MP_BC_DELETE_DEREF): {
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_UINT;
                     if (mp_obj_cell_get(fastn[-unum]) == MP_OBJ_NULL) {
                         goto local_name_error;
@@ -333,12 +552,14 @@ dispatch_loop:
                 }
 
                 ENTRY(MP_BC_DELETE_NAME): {
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_QSTR;
                     mp_delete_name(qst);
                     DISPATCH();
                 }
 
                 ENTRY(MP_BC_DELETE_GLOBAL): {
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_QSTR;
                     mp_delete_global(qst);
                     DISPATCH();
@@ -418,184 +639,214 @@ dispatch_loop:
                 }
 
                 ENTRY(MP_BC_SETUP_WITH): {
+                    MARK_EXC_IP_SELECTIVE();
+                    // stack: (..., ctx_mgr)
                     mp_obj_t obj = TOP();
-                    SET_TOP(mp_load_attr(obj, MP_QSTR___exit__));
-                    mp_load_method(obj, MP_QSTR___enter__, sp + 1);
-                    mp_obj_t ret = mp_call_method_n_kw(0, 0, sp + 1);
-                    PUSH_EXC_BLOCK();
+                    mp_load_method(obj, MP_QSTR___exit__, sp);
+                    mp_load_method(obj, MP_QSTR___enter__, sp + 2);
+                    mp_obj_t ret = mp_call_method_n_kw(0, 0, sp + 2);
+                    sp += 1;
+                    PUSH_EXC_BLOCK(1);
                     PUSH(ret);
+                    // stack: (..., __exit__, ctx_mgr, as_value)
                     DISPATCH();
                 }
 
                 ENTRY(MP_BC_WITH_CLEANUP): {
+                    MARK_EXC_IP_SELECTIVE();
                     // Arriving here, there's "exception control block" on top of stack,
-                    // and __exit__ bound method underneath it. Bytecode calls __exit__,
+                    // and __exit__ method (with self) underneath it. Bytecode calls __exit__,
                     // and "deletes" it off stack, shifting "exception control block"
                     // to its place.
-                    static const mp_obj_t no_exc[] = {mp_const_none, mp_const_none, mp_const_none};
+                    // The bytecode emitter ensures that there is enough space on the Python
+                    // value stack to hold the __exit__ method plus an additional 4 entries.
                     if (TOP() == mp_const_none) {
-                        sp--;
-                        mp_obj_t obj = TOP();
+                        // stack: (..., __exit__, ctx_mgr, None)
+                        sp[1] = mp_const_none;
+                        sp[2] = mp_const_none;
+                        sp -= 2;
+                        mp_call_method_n_kw(3, 0, sp);
                         SET_TOP(mp_const_none);
-                        mp_call_function_n_kw(obj, 3, 0, no_exc);
-                    } else if (MP_OBJ_IS_SMALL_INT(TOP())) {
-                        mp_obj_t cause = POP();
-                        switch (MP_OBJ_SMALL_INT_VALUE(cause)) {
-                            case UNWIND_RETURN: {
-                                mp_obj_t retval = POP();
-                                mp_call_function_n_kw(TOP(), 3, 0, no_exc);
-                                SET_TOP(retval);
-                                PUSH(cause);
-                                break;
-                            }
-                            case UNWIND_JUMP: {
-                                mp_call_function_n_kw(sp[-2], 3, 0, no_exc);
-                                // Pop __exit__ boundmethod at sp[-2]
-                                sp[-2] = sp[-1];
-                                sp[-1] = sp[0];
-                                SET_TOP(cause);
-                                break;
-                            }
-                            default:
-                                assert(0);
-                        }
-                    } else if (mp_obj_is_exception_type(TOP())) {
-                        mp_obj_t args[3] = {sp[0], sp[-1], sp[-2]};
-                        mp_obj_t ret_value = mp_call_function_n_kw(sp[-3], 3, 0, args);
-                        // Pop __exit__ boundmethod at sp[-3]
-                        // TODO: Once semantics is proven, optimize for case when ret_value == True
-                        sp[-3] = sp[-2];
-                        sp[-2] = sp[-1];
-                        sp[-1] = sp[0];
-                        sp--;
-                        if (mp_obj_is_true(ret_value)) {
-                            // This is what CPython does
-                            //PUSH(MP_OBJ_NEW_SMALL_INT(UNWIND_SILENCED));
-                            // But what we need to do is - pop exception from value stack...
-                            sp -= 3;
-                            // ... pop "with" exception handler, and signal END_FINALLY
-                            // to just execute finally handler normally (by pushing None
-                            // on value stack)
-                            assert(exc_sp >= exc_stack);
-                            assert(exc_sp->opcode == MP_BC_SETUP_WITH);
-                            POP_EXC_BLOCK();
-                            PUSH(mp_const_none);
-                        }
+                    } else if (mp_obj_is_small_int(TOP())) {
+                        // Getting here there are two distinct cases:
+                        //  - unwind return, stack: (..., __exit__, ctx_mgr, ret_val, SMALL_INT(-1))
+                        //  - unwind jump, stack:   (..., __exit__, ctx_mgr, dest_ip, SMALL_INT(num_exc))
+                        // For both cases we do exactly the same thing.
+                        mp_obj_t data = sp[-1];
+                        mp_obj_t cause = sp[0];
+                        sp[-1] = mp_const_none;
+                        sp[0] = mp_const_none;
+                        sp[1] = mp_const_none;
+                        mp_call_method_n_kw(3, 0, sp - 3);
+                        sp[-3] = data;
+                        sp[-2] = cause;
+                        sp -= 2; // we removed (__exit__, ctx_mgr)
                     } else {
-                        assert(0);
+                        assert(mp_obj_is_exception_instance(TOP()));
+                        // stack: (..., __exit__, ctx_mgr, exc_instance)
+                        // Need to pass (exc_type, exc_instance, None) as arguments to __exit__.
+                        sp[1] = sp[0];
+                        sp[0] = MP_OBJ_FROM_PTR(mp_obj_get_type(sp[0]));
+                        sp[2] = mp_const_none;
+                        sp -= 2;
+                        mp_obj_t ret_value = mp_call_method_n_kw(3, 0, sp);
+                        if (mp_obj_is_true(ret_value)) {
+                            // We need to silence/swallow the exception.  This is done
+                            // by popping the exception and the __exit__ handler and
+                            // replacing it with None, which signals END_FINALLY to just
+                            // execute the finally handler normally.
+                            SET_TOP(mp_const_none);
+                        } else {
+                            // We need to re-raise the exception.  We pop __exit__ handler
+                            // by copying the exception instance down to the new top-of-stack.
+                            sp[0] = sp[3];
+                        }
                     }
                     DISPATCH();
                 }
 
                 ENTRY(MP_BC_UNWIND_JUMP): {
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_SLABEL;
-                    PUSH((void*)(ip + slab)); // push destination ip for jump
-                    PUSH((void*)(mp_uint_t)(*ip)); // push number of exception handlers to unwind (0x80 bit set if we also need to pop stack)
+                    PUSH((mp_obj_t)(mp_uint_t)(uintptr_t)(ip + slab)); // push destination ip for jump
+                    PUSH((mp_obj_t)(mp_uint_t)(*ip)); // push number of exception handlers to unwind (0x80 bit set if we also need to pop stack)
 unwind_jump:;
                     mp_uint_t unum = (mp_uint_t)POP(); // get number of exception handlers to unwind
                     while ((unum & 0x7f) > 0) {
                         unum -= 1;
                         assert(exc_sp >= exc_stack);
-                        if (exc_sp->opcode == MP_BC_SETUP_FINALLY || exc_sp->opcode == MP_BC_SETUP_WITH) {
-                            // We're going to run "finally" code as a coroutine
-                            // (not calling it recursively). Set up a sentinel
-                            // on a stack so it can return back to us when it is
-                            // done (when END_FINALLY reached).
-                            PUSH((void*)unum); // push number of exception handlers left to unwind
-                            PUSH(MP_OBJ_NEW_SMALL_INT(UNWIND_JUMP)); // push sentinel
-                            ip = exc_sp->handler; // get exception handler byte code address
-                            exc_sp--; // pop exception handler
-                            goto dispatch_loop; // run the exception handler
+
+                        if (MP_TAGPTR_TAG1(exc_sp->val_sp)) {
+                            if (exc_sp->handler > ip) {
+                                // Found a finally handler that isn't active; run it.
+                                // Getting here the stack looks like:
+                                //     (..., X, dest_ip)
+                                // where X is pointed to by exc_sp->val_sp and in the case
+                                // of a "with" block contains the context manager info.
+                                assert(&sp[-1] == MP_TAGPTR_PTR(exc_sp->val_sp));
+                                // We're going to run "finally" code as a coroutine
+                                // (not calling it recursively). Set up a sentinel
+                                // on the stack so it can return back to us when it is
+                                // done (when WITH_CLEANUP or END_FINALLY reached).
+                                // The sentinel is the number of exception handlers left to
+                                // unwind, which is a non-negative integer.
+                                PUSH(MP_OBJ_NEW_SMALL_INT(unum));
+                                ip = exc_sp->handler;
+                                goto dispatch_loop;
+                            } else {
+                                // Found a finally handler that is already active; cancel it.
+                                CANCEL_ACTIVE_FINALLY(sp);
+                            }
                         }
-                        exc_sp--;
+                        POP_EXC_BLOCK();
                     }
-                    ip = (const byte*)POP(); // pop destination ip for jump
+                    ip = (const byte*)MP_OBJ_TO_PTR(POP()); // pop destination ip for jump
                     if (unum != 0) {
-                        sp--;
+                        // pop the exhausted iterator
+                        sp -= MP_OBJ_ITER_BUF_NSLOTS;
                     }
                     DISPATCH_WITH_PEND_EXC_CHECK();
                 }
 
-                // matched against: POP_BLOCK or POP_EXCEPT (anything else?)
                 ENTRY(MP_BC_SETUP_EXCEPT):
                 ENTRY(MP_BC_SETUP_FINALLY): {
-                    PUSH_EXC_BLOCK();
+                    MARK_EXC_IP_SELECTIVE();
+                    #if SELECTIVE_EXC_IP
+                    PUSH_EXC_BLOCK((code_state->ip[-1] == MP_BC_SETUP_FINALLY) ? 1 : 0);
+                    #else
+                    PUSH_EXC_BLOCK((code_state->ip[0] == MP_BC_SETUP_FINALLY) ? 1 : 0);
+                    #endif
                     DISPATCH();
                 }
 
                 ENTRY(MP_BC_END_FINALLY):
-                    // not fully implemented
-                    // if TOS is an exception, reraises the exception (3 values on TOS)
+                    MARK_EXC_IP_SELECTIVE();
                     // if TOS is None, just pops it and continues
-                    // if TOS is an integer, does something else
-                    // else error
-                    if (mp_obj_is_exception_type(TOP())) {
-                        RAISE(sp[-1]);
-                    }
+                    // if TOS is an integer, finishes coroutine and returns control to caller
+                    // if TOS is an exception, reraises the exception
+                    assert(exc_sp >= exc_stack);
+                    POP_EXC_BLOCK();
                     if (TOP() == mp_const_none) {
                         sp--;
-                    } else if (MP_OBJ_IS_SMALL_INT(TOP())) {
+                    } else if (mp_obj_is_small_int(TOP())) {
                         // We finished "finally" coroutine and now dispatch back
                         // to our caller, based on TOS value
-                        mp_unwind_reason_t reason = MP_OBJ_SMALL_INT_VALUE(POP());
-                        switch (reason) {
-                            case UNWIND_RETURN:
-                                goto unwind_return;
-                            case UNWIND_JUMP:
-                                goto unwind_jump;
+                        mp_int_t cause = MP_OBJ_SMALL_INT_VALUE(POP());
+                        if (cause < 0) {
+                            // A negative cause indicates unwind return
+                            goto unwind_return;
+                        } else {
+                            // Otherwise it's an unwind jump and we must push as a raw
+                            // number the number of exception handlers to unwind
+                            PUSH((mp_obj_t)cause);
+                            goto unwind_jump;
                         }
-                        assert(0);
                     } else {
-                        assert(0);
+                        assert(mp_obj_is_exception_instance(TOP()));
+                        RAISE(TOP());
                     }
                     DISPATCH();
 
                 ENTRY(MP_BC_GET_ITER):
-                    SET_TOP(mp_getiter(TOP()));
+                    MARK_EXC_IP_SELECTIVE();
+                    SET_TOP(mp_getiter(TOP(), NULL));
                     DISPATCH();
 
-                ENTRY(MP_BC_FOR_ITER): {
-                    DECODE_ULABEL; // the jump offset if iteration finishes; for labels are always forward
-                    code_state->sp = sp;
-                    assert(TOP());
-                    mp_obj_t value = mp_iternext_allow_raise(TOP());
-                    if (value == MP_OBJ_STOP_ITERATION) {
-                        --sp; // pop the exhausted iterator
-                        ip += ulab; // jump to after for-block
-                    } else {
-                        PUSH(value); // push the next iteration value
+                // An iterator for a for-loop takes MP_OBJ_ITER_BUF_NSLOTS slots on
+                // the Python value stack.  These slots are either used to store the
+                // iterator object itself, or the first slot is MP_OBJ_NULL and
+                // the second slot holds a reference to the iterator object.
+                ENTRY(MP_BC_GET_ITER_STACK): {
+                    MARK_EXC_IP_SELECTIVE();
+                    mp_obj_t obj = TOP();
+                    mp_obj_iter_buf_t *iter_buf = (mp_obj_iter_buf_t*)sp;
+                    sp += MP_OBJ_ITER_BUF_NSLOTS - 1;
+                    obj = mp_getiter(obj, iter_buf);
+                    if (obj != MP_OBJ_FROM_PTR(iter_buf)) {
+                        // Iterator didn't use the stack so indicate that with MP_OBJ_NULL.
+                        sp[-MP_OBJ_ITER_BUF_NSLOTS + 1] = MP_OBJ_NULL;
+                        sp[-MP_OBJ_ITER_BUF_NSLOTS + 2] = obj;
                     }
                     DISPATCH();
                 }
 
-                // matched against: SETUP_EXCEPT, SETUP_FINALLY, SETUP_WITH
-                ENTRY(MP_BC_POP_BLOCK):
-                    // we are exiting an exception handler, so pop the last one of the exception-stack
-                    assert(exc_sp >= exc_stack);
-                    POP_EXC_BLOCK();
-                    DISPATCH();
-
-                // matched against: SETUP_EXCEPT
-                ENTRY(MP_BC_POP_EXCEPT):
-                    // TODO need to work out how blocks work etc
-                    // pops block, checks it's an exception block, and restores the stack, saving the 3 exception values to local threadstate
-                    assert(exc_sp >= exc_stack);
-                    assert(currently_in_except_block);
-                    //sp = (mp_obj_t*)(*exc_sp--);
-                    //exc_sp--; // discard ip
-                    POP_EXC_BLOCK();
-                    //sp -= 3; // pop 3 exception values
-                    DISPATCH();
-
-                ENTRY(MP_BC_NOT):
-                    if (TOP() == mp_const_true) {
-                        SET_TOP(mp_const_false);
+                ENTRY(MP_BC_FOR_ITER): {
+                    FRAME_UPDATE();
+                    MARK_EXC_IP_SELECTIVE();
+                    DECODE_ULABEL; // the jump offset if iteration finishes; for labels are always forward
+                    code_state->sp = sp;
+                    mp_obj_t obj;
+                    if (sp[-MP_OBJ_ITER_BUF_NSLOTS + 1] == MP_OBJ_NULL) {
+                        obj = sp[-MP_OBJ_ITER_BUF_NSLOTS + 2];
                     } else {
-                        SET_TOP(mp_const_true);
+                        obj = MP_OBJ_FROM_PTR(&sp[-MP_OBJ_ITER_BUF_NSLOTS + 1]);
+                    }
+                    mp_obj_t value = mp_iternext_allow_raise(obj);
+                    if (value == MP_OBJ_STOP_ITERATION) {
+                        sp -= MP_OBJ_ITER_BUF_NSLOTS; // pop the exhausted iterator
+                        ip += ulab; // jump to after for-block
+                    } else {
+                        PUSH(value); // push the next iteration value
+                        #if MICROPY_PY_SYS_SETTRACE
+                        // LINE event should trigger for every iteration so invalidate last trigger
+                        if (code_state->frame) {
+                            code_state->frame->lineno = 0;
+                        }
+                        #endif
                     }
                     DISPATCH();
+                }
+
+                ENTRY(MP_BC_POP_EXCEPT_JUMP): {
+                    assert(exc_sp >= exc_stack);
+                    POP_EXC_BLOCK();
+                    DECODE_ULABEL;
+                    ip += ulab;
+                    DISPATCH_WITH_PEND_EXC_CHECK();
+                }
 
                 ENTRY(MP_BC_BUILD_TUPLE): {
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_UINT;
                     sp -= unum - 1;
                     SET_TOP(mp_obj_new_tuple(unum, sp));
@@ -603,74 +854,72 @@ unwind_jump:;
                 }
 
                 ENTRY(MP_BC_BUILD_LIST): {
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_UINT;
                     sp -= unum - 1;
                     SET_TOP(mp_obj_new_list(unum, sp));
                     DISPATCH();
                 }
 
-                ENTRY(MP_BC_LIST_APPEND): {
-                    DECODE_UINT;
-                    // I think it's guaranteed by the compiler that sp[unum] is a list
-                    mp_obj_list_append(sp[-unum], sp[0]);
-                    sp--;
-                    DISPATCH();
-                }
-
                 ENTRY(MP_BC_BUILD_MAP): {
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_UINT;
                     PUSH(mp_obj_new_dict(unum));
                     DISPATCH();
                 }
 
                 ENTRY(MP_BC_STORE_MAP):
+                    MARK_EXC_IP_SELECTIVE();
                     sp -= 2;
                     mp_obj_dict_store(sp[0], sp[2], sp[1]);
                     DISPATCH();
 
-                ENTRY(MP_BC_MAP_ADD): {
-                    DECODE_UINT;
-                    // I think it's guaranteed by the compiler that sp[-unum - 1] is a map
-                    mp_obj_dict_store(sp[-unum - 1], sp[0], sp[-1]);
-                    sp -= 2;
-                    DISPATCH();
-                }
-
 #if MICROPY_PY_BUILTINS_SET
                 ENTRY(MP_BC_BUILD_SET): {
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_UINT;
                     sp -= unum - 1;
                     SET_TOP(mp_obj_new_set(unum, sp));
-                    DISPATCH();
-                }
-
-                ENTRY(MP_BC_SET_ADD): {
-                    DECODE_UINT;
-                    // I think it's guaranteed by the compiler that sp[-unum] is a set
-                    mp_obj_set_store(sp[-unum], sp[0]);
-                    sp--;
                     DISPATCH();
                 }
 #endif
 
 #if MICROPY_PY_BUILTINS_SLICE
                 ENTRY(MP_BC_BUILD_SLICE): {
-                    DECODE_UINT;
-                    if (unum == 2) {
-                        mp_obj_t stop = POP();
-                        mp_obj_t start = TOP();
-                        SET_TOP(mp_obj_new_slice(start, stop, mp_const_none));
-                    } else {
-                        mp_obj_t step = POP();
-                        mp_obj_t stop = POP();
-                        mp_obj_t start = TOP();
-                        SET_TOP(mp_obj_new_slice(start, stop, step));
+                    MARK_EXC_IP_SELECTIVE();
+                    mp_obj_t step = mp_const_none;
+                    if (*ip++ == 3) {
+                        // 3-argument slice includes step
+                        step = POP();
                     }
+                    mp_obj_t stop = POP();
+                    mp_obj_t start = TOP();
+                    SET_TOP(mp_obj_new_slice(start, stop, step));
                     DISPATCH();
                 }
 #endif
 
+                ENTRY(MP_BC_STORE_COMP): {
+                    MARK_EXC_IP_SELECTIVE();
+                    DECODE_UINT;
+                    mp_obj_t obj = sp[-(unum >> 2)];
+                    if ((unum & 3) == 0) {
+                        mp_obj_list_append(obj, sp[0]);
+                        sp--;
+                    } else if (!MICROPY_PY_BUILTINS_SET || (unum & 3) == 1) {
+                        mp_obj_dict_store(obj, sp[0], sp[-1]);
+                        sp -= 2;
+                    #if MICROPY_PY_BUILTINS_SET
+                    } else {
+                        mp_obj_set_store(obj, sp[0]);
+                        sp--;
+                    #endif
+                    }
+                    DISPATCH();
+                }
+
                 ENTRY(MP_BC_UNPACK_SEQUENCE): {
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_UINT;
                     mp_unpack_sequence(sp[0], unum, sp);
                     sp += unum - 1;
@@ -678,6 +927,7 @@ unwind_jump:;
                 }
 
                 ENTRY(MP_BC_UNPACK_EX): {
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_UINT;
                     mp_unpack_ex(sp[0], unum, sp);
                     sp += (unum & 0xff) + ((unum >> 8) & 0xff);
@@ -700,7 +950,7 @@ unwind_jump:;
 
                 ENTRY(MP_BC_MAKE_CLOSURE): {
                     DECODE_PTR;
-                    mp_uint_t n_closed_over = *ip++;
+                    size_t n_closed_over = *ip++;
                     // Stack layout: closed_overs <- TOS
                     sp -= n_closed_over - 1;
                     SET_TOP(mp_make_closure_from_raw_code(ptr, n_closed_over, sp));
@@ -709,7 +959,7 @@ unwind_jump:;
 
                 ENTRY(MP_BC_MAKE_CLOSURE_DEFARGS): {
                     DECODE_PTR;
-                    mp_uint_t n_closed_over = *ip++;
+                    size_t n_closed_over = *ip++;
                     // Stack layout: def_tuple def_dict closed_overs <- TOS
                     sp -= 2 + n_closed_over - 1;
                     SET_TOP(mp_make_closure_from_raw_code(ptr, 0x100 | n_closed_over, sp));
@@ -717,89 +967,256 @@ unwind_jump:;
                 }
 
                 ENTRY(MP_BC_CALL_FUNCTION): {
+                    FRAME_UPDATE();
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_UINT;
                     // unum & 0xff == n_positional
                     // (unum >> 8) & 0xff == n_keyword
                     sp -= (unum & 0xff) + ((unum >> 7) & 0x1fe);
+                    #if MICROPY_STACKLESS
+                    if (mp_obj_get_type(*sp) == &mp_type_fun_bc) {
+                        code_state->ip = ip;
+                        code_state->sp = sp;
+                        code_state->exc_sp_idx = MP_CODE_STATE_EXC_SP_IDX_FROM_PTR(exc_stack, exc_sp);
+                        mp_code_state_t *new_state = mp_obj_fun_bc_prepare_codestate(*sp, unum & 0xff, (unum >> 8) & 0xff, sp + 1);
+                        #if !MICROPY_ENABLE_PYSTACK
+                        if (new_state == NULL) {
+                            // Couldn't allocate codestate on heap: in the strict case raise
+                            // an exception, otherwise just fall through to stack allocation.
+                            #if MICROPY_STACKLESS_STRICT
+                        deep_recursion_error:
+                            mp_raise_recursion_depth();
+                            #endif
+                        } else
+                        #endif
+                        {
+                            new_state->prev = code_state;
+                            code_state = new_state;
+                            nlr_pop();
+                            goto run_code_state;
+                        }
+                    }
+                    #endif
                     SET_TOP(mp_call_function_n_kw(*sp, unum & 0xff, (unum >> 8) & 0xff, sp + 1));
                     DISPATCH();
                 }
 
                 ENTRY(MP_BC_CALL_FUNCTION_VAR_KW): {
+                    FRAME_UPDATE();
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_UINT;
                     // unum & 0xff == n_positional
                     // (unum >> 8) & 0xff == n_keyword
-                    // We have folowing stack layout here:
+                    // We have following stack layout here:
                     // fun arg0 arg1 ... kw0 val0 kw1 val1 ... seq dict <- TOS
                     sp -= (unum & 0xff) + ((unum >> 7) & 0x1fe) + 2;
+                    #if MICROPY_STACKLESS
+                    if (mp_obj_get_type(*sp) == &mp_type_fun_bc) {
+                        code_state->ip = ip;
+                        code_state->sp = sp;
+                        code_state->exc_sp_idx = MP_CODE_STATE_EXC_SP_IDX_FROM_PTR(exc_stack, exc_sp);
+
+                        mp_call_args_t out_args;
+                        mp_call_prepare_args_n_kw_var(false, unum, sp, &out_args);
+
+                        mp_code_state_t *new_state = mp_obj_fun_bc_prepare_codestate(out_args.fun,
+                            out_args.n_args, out_args.n_kw, out_args.args);
+                        #if !MICROPY_ENABLE_PYSTACK
+                        // Freeing args at this point does not follow a LIFO order so only do it if
+                        // pystack is not enabled.  For pystack, they are freed when code_state is.
+                        mp_nonlocal_free(out_args.args, out_args.n_alloc * sizeof(mp_obj_t));
+                        #endif
+                        #if !MICROPY_ENABLE_PYSTACK
+                        if (new_state == NULL) {
+                            // Couldn't allocate codestate on heap: in the strict case raise
+                            // an exception, otherwise just fall through to stack allocation.
+                            #if MICROPY_STACKLESS_STRICT
+                            goto deep_recursion_error;
+                            #endif
+                        } else
+                        #endif
+                        {
+                            new_state->prev = code_state;
+                            code_state = new_state;
+                            nlr_pop();
+                            goto run_code_state;
+                        }
+                    }
+                    #endif
                     SET_TOP(mp_call_method_n_kw_var(false, unum, sp));
                     DISPATCH();
                 }
 
                 ENTRY(MP_BC_CALL_METHOD): {
+                    FRAME_UPDATE();
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_UINT;
                     // unum & 0xff == n_positional
                     // (unum >> 8) & 0xff == n_keyword
                     sp -= (unum & 0xff) + ((unum >> 7) & 0x1fe) + 1;
+                    #if MICROPY_STACKLESS
+                    if (mp_obj_get_type(*sp) == &mp_type_fun_bc) {
+                        code_state->ip = ip;
+                        code_state->sp = sp;
+                        code_state->exc_sp_idx = MP_CODE_STATE_EXC_SP_IDX_FROM_PTR(exc_stack, exc_sp);
+
+                        size_t n_args = unum & 0xff;
+                        size_t n_kw = (unum >> 8) & 0xff;
+                        int adjust = (sp[1] == MP_OBJ_NULL) ? 0 : 1;
+
+                        mp_code_state_t *new_state = mp_obj_fun_bc_prepare_codestate(*sp, n_args + adjust, n_kw, sp + 2 - adjust);
+                        #if !MICROPY_ENABLE_PYSTACK
+                        if (new_state == NULL) {
+                            // Couldn't allocate codestate on heap: in the strict case raise
+                            // an exception, otherwise just fall through to stack allocation.
+                            #if MICROPY_STACKLESS_STRICT
+                            goto deep_recursion_error;
+                            #endif
+                        } else
+                        #endif
+                        {
+                            new_state->prev = code_state;
+                            code_state = new_state;
+                            nlr_pop();
+                            goto run_code_state;
+                        }
+                    }
+                    #endif
                     SET_TOP(mp_call_method_n_kw(unum & 0xff, (unum >> 8) & 0xff, sp));
                     DISPATCH();
                 }
 
                 ENTRY(MP_BC_CALL_METHOD_VAR_KW): {
+                    FRAME_UPDATE();
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_UINT;
                     // unum & 0xff == n_positional
                     // (unum >> 8) & 0xff == n_keyword
-                    // We have folowing stack layout here:
+                    // We have following stack layout here:
                     // fun self arg0 arg1 ... kw0 val0 kw1 val1 ... seq dict <- TOS
                     sp -= (unum & 0xff) + ((unum >> 7) & 0x1fe) + 3;
+                    #if MICROPY_STACKLESS
+                    if (mp_obj_get_type(*sp) == &mp_type_fun_bc) {
+                        code_state->ip = ip;
+                        code_state->sp = sp;
+                        code_state->exc_sp_idx = MP_CODE_STATE_EXC_SP_IDX_FROM_PTR(exc_stack, exc_sp);
+
+                        mp_call_args_t out_args;
+                        mp_call_prepare_args_n_kw_var(true, unum, sp, &out_args);
+
+                        mp_code_state_t *new_state = mp_obj_fun_bc_prepare_codestate(out_args.fun,
+                            out_args.n_args, out_args.n_kw, out_args.args);
+                        #if !MICROPY_ENABLE_PYSTACK
+                        // Freeing args at this point does not follow a LIFO order so only do it if
+                        // pystack is not enabled.  For pystack, they are freed when code_state is.
+                        mp_nonlocal_free(out_args.args, out_args.n_alloc * sizeof(mp_obj_t));
+                        #endif
+                        #if !MICROPY_ENABLE_PYSTACK
+                        if (new_state == NULL) {
+                            // Couldn't allocate codestate on heap: in the strict case raise
+                            // an exception, otherwise just fall through to stack allocation.
+                            #if MICROPY_STACKLESS_STRICT
+                            goto deep_recursion_error;
+                            #endif
+                        } else
+                        #endif
+                        {
+                            new_state->prev = code_state;
+                            code_state = new_state;
+                            nlr_pop();
+                            goto run_code_state;
+                        }
+                    }
+                    #endif
                     SET_TOP(mp_call_method_n_kw_var(true, unum, sp));
                     DISPATCH();
                 }
 
                 ENTRY(MP_BC_RETURN_VALUE):
+                    MARK_EXC_IP_SELECTIVE();
 unwind_return:
+                    // Search for and execute finally handlers that aren't already active
                     while (exc_sp >= exc_stack) {
-                        if (exc_sp->opcode == MP_BC_SETUP_FINALLY || exc_sp->opcode == MP_BC_SETUP_WITH) {
-                            // We're going to run "finally" code as a coroutine
-                            // (not calling it recursively). Set up a sentinel
-                            // on a stack so it can return back to us when it is
-                            // done (when END_FINALLY reached).
-                            PUSH(MP_OBJ_NEW_SMALL_INT(UNWIND_RETURN));
-                            ip = exc_sp->handler;
-                            // We don't need to do anything with sp, finally is just
-                            // syntactic sugar for sequential execution??
-                            // sp =
-                            exc_sp--;
-                            goto dispatch_loop;
+                        if (MP_TAGPTR_TAG1(exc_sp->val_sp)) {
+                            if (exc_sp->handler > ip) {
+                                // Found a finally handler that isn't active; run it.
+                                // Getting here the stack looks like:
+                                //     (..., X, [iter0, iter1, ...,] ret_val)
+                                // where X is pointed to by exc_sp->val_sp and in the case
+                                // of a "with" block contains the context manager info.
+                                // There may be 0 or more for-iterators between X and the
+                                // return value, and these must be removed before control can
+                                // pass to the finally code.  We simply copy the ret_value down
+                                // over these iterators, if they exist.  If they don't then the
+                                // following is a null operation.
+                                mp_obj_t *finally_sp = MP_TAGPTR_PTR(exc_sp->val_sp);
+                                finally_sp[1] = sp[0];
+                                sp = &finally_sp[1];
+                                // We're going to run "finally" code as a coroutine
+                                // (not calling it recursively). Set up a sentinel
+                                // on a stack so it can return back to us when it is
+                                // done (when WITH_CLEANUP or END_FINALLY reached).
+                                PUSH(MP_OBJ_NEW_SMALL_INT(-1));
+                                ip = exc_sp->handler;
+                                goto dispatch_loop;
+                            } else {
+                                // Found a finally handler that is already active; cancel it.
+                                CANCEL_ACTIVE_FINALLY(sp);
+                            }
                         }
-                        exc_sp--;
+                        POP_EXC_BLOCK();
                     }
                     nlr_pop();
                     code_state->sp = sp;
                     assert(exc_sp == exc_stack - 1);
+                    MICROPY_VM_HOOK_RETURN
+                    #if MICROPY_STACKLESS
+                    if (code_state->prev != NULL) {
+                        mp_obj_t res = *sp;
+                        mp_globals_set(code_state->old_globals);
+                        mp_code_state_t *new_code_state = code_state->prev;
+                        #if MICROPY_ENABLE_PYSTACK
+                        // Free code_state, and args allocated by mp_call_prepare_args_n_kw_var
+                        // (The latter is implicitly freed when using pystack due to its LIFO nature.)
+                        // The sizeof in the following statement does not include the size of the variable
+                        // part of the struct.  This arg is anyway not used if pystack is enabled.
+                        mp_nonlocal_free(code_state, sizeof(mp_code_state_t));
+                        #endif
+                        code_state = new_code_state;
+                        *code_state->sp = res;
+                        goto run_code_state_from_return;
+                    }
+                    #endif
+                    FRAME_LEAVE();
                     return MP_VM_RETURN_NORMAL;
 
-                ENTRY(MP_BC_RAISE_VARARGS): {
-                    mp_uint_t unum = *ip++;
-                    mp_obj_t obj;
-                    assert(unum <= 1);
-                    if (unum == 0) {
-                        // search for the inner-most previous exception, to reraise it
-                        obj = MP_OBJ_NULL;
-                        for (mp_exc_stack_t *e = exc_sp; e >= exc_stack; e--) {
-                            if (e->prev_exc != MP_OBJ_NULL) {
-                                obj = e->prev_exc;
-                                break;
-                            }
+                ENTRY(MP_BC_RAISE_LAST): {
+                    MARK_EXC_IP_SELECTIVE();
+                    // search for the inner-most previous exception, to reraise it
+                    mp_obj_t obj = MP_OBJ_NULL;
+                    for (mp_exc_stack_t *e = exc_sp; e >= exc_stack; --e) {
+                        if (e->prev_exc != NULL) {
+                            obj = MP_OBJ_FROM_PTR(e->prev_exc);
+                            break;
                         }
-                        if (obj == MP_OBJ_NULL) {
-                            obj = mp_obj_new_exception_msg(&mp_type_RuntimeError, "No active exception to reraise");
-                            RAISE(obj);
-                        }
-                    } else {
-                        obj = POP();
                     }
-                    obj = mp_make_raise_obj(obj);
+                    if (obj == MP_OBJ_NULL) {
+                        obj = mp_obj_new_exception_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("no active exception to reraise"));
+                    }
+                    RAISE(obj);
+                }
+
+                ENTRY(MP_BC_RAISE_OBJ): {
+                    MARK_EXC_IP_SELECTIVE();
+                    mp_obj_t obj = mp_make_raise_obj(TOP());
+                    RAISE(obj);
+                }
+
+                ENTRY(MP_BC_RAISE_FROM): {
+                    MARK_EXC_IP_SELECTIVE();
+                    mp_warning(NULL, "exception chaining not supported");
+                    sp--; // ignore (pop) "from" argument
+                    mp_obj_t obj = mp_make_raise_obj(TOP());
                     RAISE(obj);
                 }
 
@@ -808,17 +1225,20 @@ yield:
                     nlr_pop();
                     code_state->ip = ip;
                     code_state->sp = sp;
-                    code_state->exc_sp = MP_TAGPTR_MAKE(exc_sp, currently_in_except_block);
+                    code_state->exc_sp_idx = MP_CODE_STATE_EXC_SP_IDX_FROM_PTR(exc_stack, exc_sp);
+                    FRAME_LEAVE();
                     return MP_VM_RETURN_YIELD;
 
                 ENTRY(MP_BC_YIELD_FROM): {
-//#define EXC_MATCH(exc, type) MP_OBJ_IS_TYPE(exc, type)
+                    MARK_EXC_IP_SELECTIVE();
+//#define EXC_MATCH(exc, type) mp_obj_is_type(exc, type)
 #define EXC_MATCH(exc, type) mp_obj_exception_match(exc, type)
-#define GENERATOR_EXIT_IF_NEEDED(t) if (t != MP_OBJ_NULL && EXC_MATCH(t, &mp_type_GeneratorExit)) { RAISE(t); }
+#define GENERATOR_EXIT_IF_NEEDED(t) if (t != MP_OBJ_NULL && EXC_MATCH(t, MP_OBJ_FROM_PTR(&mp_type_GeneratorExit))) { mp_obj_t raise_t = mp_make_raise_obj(t); RAISE(raise_t); }
                     mp_vm_return_kind_t ret_kind;
                     mp_obj_t send_value = POP();
                     mp_obj_t t_exc = MP_OBJ_NULL;
                     mp_obj_t ret_value;
+                    code_state->sp = sp; // Save sp because it's needed if mp_resume raises StopIteration
                     if (inject_exc != MP_OBJ_NULL) {
                         t_exc = inject_exc;
                         inject_exc = MP_OBJ_NULL;
@@ -831,11 +1251,10 @@ yield:
                         ip--;
                         PUSH(ret_value);
                         goto yield;
-                    }
-                    if (ret_kind == MP_VM_RETURN_NORMAL) {
+                    } else if (ret_kind == MP_VM_RETURN_NORMAL) {
                         // Pop exhausted gen
                         sp--;
-                        if (ret_value == MP_OBJ_NULL) {
+                        if (ret_value == MP_OBJ_STOP_ITERATION) {
                             // Optimize StopIteration
                             // TODO: get StopIteration's value
                             PUSH(mp_const_none);
@@ -847,23 +1266,18 @@ yield:
                         // if it was swallowed, we re-raise GeneratorExit
                         GENERATOR_EXIT_IF_NEEDED(t_exc);
                         DISPATCH();
-                    }
-                    if (ret_kind == MP_VM_RETURN_EXCEPTION) {
+                    } else {
+                        assert(ret_kind == MP_VM_RETURN_EXCEPTION);
+                        assert(!EXC_MATCH(ret_value, MP_OBJ_FROM_PTR(&mp_type_StopIteration)));
                         // Pop exhausted gen
                         sp--;
-                        if (EXC_MATCH(ret_value, &mp_type_StopIteration)) {
-                            PUSH(mp_obj_exception_get_value(ret_value));
-                            // If we injected GeneratorExit downstream, then even
-                            // if it was swallowed, we re-raise GeneratorExit
-                            GENERATOR_EXIT_IF_NEEDED(t_exc);
-                            DISPATCH();
-                        } else {
-                            RAISE(ret_value);
-                        }
+                        RAISE(ret_value);
                     }
                 }
 
                 ENTRY(MP_BC_IMPORT_NAME): {
+                    FRAME_UPDATE();
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_QSTR;
                     mp_obj_t obj = POP();
                     SET_TOP(mp_import_name(qst, obj, TOP()));
@@ -871,6 +1285,8 @@ yield:
                 }
 
                 ENTRY(MP_BC_IMPORT_FROM): {
+                    FRAME_UPDATE();
+                    MARK_EXC_IP_SELECTIVE();
                     DECODE_QSTR;
                     mp_obj_t obj = mp_import_from(TOP(), qst);
                     PUSH(obj);
@@ -878,12 +1294,13 @@ yield:
                 }
 
                 ENTRY(MP_BC_IMPORT_STAR):
+                    MARK_EXC_IP_SELECTIVE();
                     mp_import_all(POP());
                     DISPATCH();
 
 #if MICROPY_OPT_COMPUTED_GOTO
                 ENTRY(MP_BC_LOAD_CONST_SMALL_INT_MULTI):
-                    PUSH(MP_OBJ_NEW_SMALL_INT((mp_int_t)ip[-1] - MP_BC_LOAD_CONST_SMALL_INT_MULTI - 16));
+                    PUSH(MP_OBJ_NEW_SMALL_INT((mp_int_t)ip[-1] - MP_BC_LOAD_CONST_SMALL_INT_MULTI - MP_BC_LOAD_CONST_SMALL_INT_MULTI_EXCESS));
                     DISPATCH();
 
                 ENTRY(MP_BC_LOAD_FAST_MULTI):
@@ -895,10 +1312,12 @@ yield:
                     DISPATCH();
 
                 ENTRY(MP_BC_UNARY_OP_MULTI):
+                    MARK_EXC_IP_SELECTIVE();
                     SET_TOP(mp_unary_op(ip[-1] - MP_BC_UNARY_OP_MULTI, TOP()));
                     DISPATCH();
 
                 ENTRY(MP_BC_BINARY_OP_MULTI): {
+                    MARK_EXC_IP_SELECTIVE();
                     mp_obj_t rhs = POP();
                     mp_obj_t lhs = TOP();
                     SET_TOP(mp_binary_op(ip[-1] - MP_BC_BINARY_OP_MULTI, lhs, rhs));
@@ -906,21 +1325,22 @@ yield:
                 }
 
                 ENTRY_DEFAULT:
+                    MARK_EXC_IP_SELECTIVE();
 #else
                 ENTRY_DEFAULT:
-                    if (ip[-1] < MP_BC_LOAD_CONST_SMALL_INT_MULTI + 64) {
-                        PUSH(MP_OBJ_NEW_SMALL_INT((mp_int_t)ip[-1] - MP_BC_LOAD_CONST_SMALL_INT_MULTI - 16));
+                    if (ip[-1] < MP_BC_LOAD_CONST_SMALL_INT_MULTI + MP_BC_LOAD_CONST_SMALL_INT_MULTI_NUM) {
+                        PUSH(MP_OBJ_NEW_SMALL_INT((mp_int_t)ip[-1] - MP_BC_LOAD_CONST_SMALL_INT_MULTI - MP_BC_LOAD_CONST_SMALL_INT_MULTI_EXCESS));
                         DISPATCH();
-                    } else if (ip[-1] < MP_BC_LOAD_FAST_MULTI + 16) {
+                    } else if (ip[-1] < MP_BC_LOAD_FAST_MULTI + MP_BC_LOAD_FAST_MULTI_NUM) {
                         obj_shared = fastn[MP_BC_LOAD_FAST_MULTI - (mp_int_t)ip[-1]];
                         goto load_check;
-                    } else if (ip[-1] < MP_BC_STORE_FAST_MULTI + 16) {
+                    } else if (ip[-1] < MP_BC_STORE_FAST_MULTI + MP_BC_STORE_FAST_MULTI_NUM) {
                         fastn[MP_BC_STORE_FAST_MULTI - (mp_int_t)ip[-1]] = POP();
                         DISPATCH();
-                    } else if (ip[-1] < MP_BC_UNARY_OP_MULTI + 5) {
+                    } else if (ip[-1] < MP_BC_UNARY_OP_MULTI + MP_BC_UNARY_OP_MULTI_NUM) {
                         SET_TOP(mp_unary_op(ip[-1] - MP_BC_UNARY_OP_MULTI, TOP()));
                         DISPATCH();
-                    } else if (ip[-1] < MP_BC_BINARY_OP_MULTI + 35) {
+                    } else if (ip[-1] < MP_BC_BINARY_OP_MULTI + MP_BC_BINARY_OP_MULTI_NUM) {
                         mp_obj_t rhs = POP();
                         mp_obj_t lhs = TOP();
                         SET_TOP(mp_binary_op(ip[-1] - MP_BC_BINARY_OP_MULTI, lhs, rhs));
@@ -928,9 +1348,11 @@ yield:
                     } else
 #endif
                 {
-                    mp_obj_t obj = mp_obj_new_exception_msg(&mp_type_NotImplementedError, "byte code not implemented");
+
+                    mp_obj_t obj = mp_obj_new_exception_msg(&mp_type_NotImplementedError, MP_ERROR_TEXT("opcode"));
                     nlr_pop();
-                    fastn[0] = obj;
+                    code_state->state[0] = obj;
+                    FRAME_LEAVE();
                     return MP_VM_RETURN_EXCEPTION;
                 }
 
@@ -939,11 +1361,57 @@ yield:
 #endif
 
 pending_exception_check:
-                if (mp_pending_exception != MP_OBJ_NULL) {
-                    mp_obj_t obj = mp_pending_exception;
-                    mp_pending_exception = MP_OBJ_NULL;
+                MICROPY_VM_HOOK_LOOP
+
+                #if MICROPY_ENABLE_SCHEDULER
+                // This is an inlined variant of mp_handle_pending
+                if (MP_STATE_VM(sched_state) == MP_SCHED_PENDING) {
+                    mp_uint_t atomic_state = MICROPY_BEGIN_ATOMIC_SECTION();
+                    // Re-check state is still pending now that we're in the atomic section.
+                    if (MP_STATE_VM(sched_state) == MP_SCHED_PENDING) {
+                        MARK_EXC_IP_SELECTIVE();
+                        mp_obj_t obj = MP_STATE_VM(mp_pending_exception);
+                        if (obj != MP_OBJ_NULL) {
+                            MP_STATE_VM(mp_pending_exception) = MP_OBJ_NULL;
+                            if (!mp_sched_num_pending()) {
+                                MP_STATE_VM(sched_state) = MP_SCHED_IDLE;
+                            }
+                            MICROPY_END_ATOMIC_SECTION(atomic_state);
+                            RAISE(obj);
+                        }
+                        mp_handle_pending_tail(atomic_state);
+                    } else {
+                        MICROPY_END_ATOMIC_SECTION(atomic_state);
+                    }
+                }
+                #else
+                // This is an inlined variant of mp_handle_pending
+                if (MP_STATE_VM(mp_pending_exception) != MP_OBJ_NULL) {
+                    MARK_EXC_IP_SELECTIVE();
+                    mp_obj_t obj = MP_STATE_VM(mp_pending_exception);
+                    MP_STATE_VM(mp_pending_exception) = MP_OBJ_NULL;
                     RAISE(obj);
                 }
+                #endif
+
+                #if MICROPY_PY_THREAD_GIL
+                #if MICROPY_PY_THREAD_GIL_VM_DIVISOR
+                if (--gil_divisor == 0)
+                #endif
+                {
+                    #if MICROPY_PY_THREAD_GIL_VM_DIVISOR
+                    gil_divisor = MICROPY_PY_THREAD_GIL_VM_DIVISOR;
+                    #endif
+                    #if MICROPY_ENABLE_SCHEDULER
+                    // can only switch threads if the scheduler is unlocked
+                    if (MP_STATE_VM(sched_state) == MP_SCHED_IDLE)
+                    #endif
+                    {
+                    MP_THREAD_GIL_EXIT();
+                    MP_THREAD_GIL_ENTER();
+                    }
+                }
+                #endif
 
             } // for loop
 
@@ -951,52 +1419,77 @@ pending_exception_check:
 exception_handler:
             // exception occurred
 
-            // check if it's a StopIteration within a for block
-            if (*code_state->ip == MP_BC_FOR_ITER && mp_obj_is_subclass_fast(mp_obj_get_type(nlr.ret_val), &mp_type_StopIteration)) {
-                const byte *ip = code_state->ip + 1;
-                DECODE_ULABEL; // the jump offset if iteration finishes; for labels are always forward
-                code_state->ip = ip + ulab; // jump to after for-block
-                code_state->sp -= 1; // pop the exhausted iterator
-                goto outer_dispatch_loop; // continue with dispatch loop
-            }
+            #if MICROPY_PY_SYS_EXC_INFO
+            MP_STATE_VM(cur_exception) = nlr.ret_val;
+            #endif
 
-            // set file and line number that the exception occurred at
-            // TODO: don't set traceback for exceptions re-raised by END_FINALLY.
-            // But consider how to handle nested exceptions.
-            // TODO need a better way of not adding traceback to constant objects (right now, just GeneratorExit_obj and MemoryError_obj)
-            if (mp_obj_is_exception_instance(nlr.ret_val) && nlr.ret_val != &mp_const_GeneratorExit_obj && nlr.ret_val != &mp_const_MemoryError_obj) {
-                const byte *ip = code_state->code_info;
-                mp_uint_t code_info_size = mp_decode_uint(&ip);
-                qstr block_name = mp_decode_uint(&ip);
-                qstr source_file = mp_decode_uint(&ip);
-                mp_uint_t bc = code_state->ip - code_state->code_info - code_info_size;
-                mp_uint_t source_line = 1;
-                mp_uint_t c;
-                while ((c = *ip)) {
-                    mp_uint_t b, l;
-                    if ((c & 0x80) == 0) {
-                        // 0b0LLBBBBB encoding
-                        b = c & 0x1f;
-                        l = c >> 5;
-                        ip += 1;
-                    } else {
-                        // 0b1LLLBBBB 0bLLLLLLLL encoding (l's LSB in second byte)
-                        b = c & 0xf;
-                        l = ((c << 4) & 0x700) | ip[1];
-                        ip += 2;
-                    }
-                    if (bc >= b) {
-                        bc -= b;
-                        source_line += l;
-                    } else {
-                        // found source line corresponding to bytecode offset
-                        break;
+            #if SELECTIVE_EXC_IP
+            // with selective ip, we store the ip 1 byte past the opcode, so move ptr back
+            code_state->ip -= 1;
+            #endif
+
+            if (mp_obj_is_subclass_fast(MP_OBJ_FROM_PTR(((mp_obj_base_t*)nlr.ret_val)->type), MP_OBJ_FROM_PTR(&mp_type_StopIteration))) {
+                if (code_state->ip) {
+                    // check if it's a StopIteration within a for block
+                    if (*code_state->ip == MP_BC_FOR_ITER) {
+                        const byte *ip = code_state->ip + 1;
+                        DECODE_ULABEL; // the jump offset if iteration finishes; for labels are always forward
+                        code_state->ip = ip + ulab; // jump to after for-block
+                        code_state->sp -= MP_OBJ_ITER_BUF_NSLOTS; // pop the exhausted iterator
+                        goto outer_dispatch_loop; // continue with dispatch loop
+                    } else if (*code_state->ip == MP_BC_YIELD_FROM) {
+                        // StopIteration inside yield from call means return a value of
+                        // yield from, so inject exception's value as yield from's result
+                        // (Instead of stack pop then push we just replace exhausted gen with value)
+                        *code_state->sp = mp_obj_exception_get_value(MP_OBJ_FROM_PTR(nlr.ret_val));
+                        code_state->ip++; // yield from is over, move to next instruction
+                        goto outer_dispatch_loop; // continue with dispatch loop
                     }
                 }
-                mp_obj_exception_add_traceback(nlr.ret_val, source_file, source_line, block_name);
             }
 
-            while (currently_in_except_block) {
+            #if MICROPY_PY_SYS_SETTRACE
+            // Exceptions are traced here
+            if (mp_obj_is_subclass_fast(MP_OBJ_FROM_PTR(((mp_obj_base_t*)nlr.ret_val)->type), MP_OBJ_FROM_PTR(&mp_type_Exception))) {
+                TRACE_TICK(code_state->ip, code_state->sp, true /* yes, it's an exception */);
+            }
+            #endif
+
+#if MICROPY_STACKLESS
+unwind_loop:
+#endif
+            // Set traceback info (file and line number) where the exception occurred, but not for:
+            // - constant GeneratorExit object, because it's const
+            // - exceptions re-raised by END_FINALLY
+            // - exceptions re-raised explicitly by "raise"
+            if (nlr.ret_val != &mp_const_GeneratorExit_obj
+                && *code_state->ip != MP_BC_END_FINALLY
+                && *code_state->ip != MP_BC_RAISE_LAST) {
+                const byte *ip = code_state->fun_bc->bytecode;
+                MP_BC_PRELUDE_SIG_DECODE(ip);
+                MP_BC_PRELUDE_SIZE_DECODE(ip);
+                const byte *bytecode_start = ip + n_info + n_cell;
+                #if !MICROPY_PERSISTENT_CODE
+                // so bytecode is aligned
+                bytecode_start = MP_ALIGN(bytecode_start, sizeof(mp_uint_t));
+                #endif
+                size_t bc = code_state->ip - bytecode_start;
+                #if MICROPY_PERSISTENT_CODE
+                qstr block_name = ip[0] | (ip[1] << 8);
+                qstr source_file = ip[2] | (ip[3] << 8);
+                ip += 4;
+                #else
+                qstr block_name = mp_decode_uint_value(ip);
+                ip = mp_decode_uint_skip(ip);
+                qstr source_file = mp_decode_uint_value(ip);
+                ip = mp_decode_uint_skip(ip);
+                #endif
+                size_t source_line = mp_bytecode_get_source_line(ip, bc);
+                mp_obj_exception_add_traceback(MP_OBJ_FROM_PTR(nlr.ret_val), source_file, source_line, block_name);
+            }
+
+            while (exc_sp >= exc_stack && exc_sp->handler <= code_state->ip) {
+
                 // nested exception
 
                 assert(exc_sp >= exc_stack);
@@ -1009,24 +1502,40 @@ exception_handler:
             }
 
             if (exc_sp >= exc_stack) {
-                // set flag to indicate that we are now handling an exception
-                currently_in_except_block = 1;
-
                 // catch exception and pass to byte code
                 code_state->ip = exc_sp->handler;
                 mp_obj_t *sp = MP_TAGPTR_PTR(exc_sp->val_sp);
                 // save this exception in the stack so it can be used in a reraise, if needed
                 exc_sp->prev_exc = nlr.ret_val;
-                // push(traceback, exc-val, exc-type)
-                PUSH(mp_const_none);
-                PUSH(nlr.ret_val);
-                PUSH(mp_obj_get_type(nlr.ret_val));
+                // push exception object so it can be handled by bytecode
+                PUSH(MP_OBJ_FROM_PTR(nlr.ret_val));
                 code_state->sp = sp;
 
+            #if MICROPY_STACKLESS
+            } else if (code_state->prev != NULL) {
+                mp_globals_set(code_state->old_globals);
+                mp_code_state_t *new_code_state = code_state->prev;
+                #if MICROPY_ENABLE_PYSTACK
+                // Free code_state, and args allocated by mp_call_prepare_args_n_kw_var
+                // (The latter is implicitly freed when using pystack due to its LIFO nature.)
+                // The sizeof in the following statement does not include the size of the variable
+                // part of the struct.  This arg is anyway not used if pystack is enabled.
+                mp_nonlocal_free(code_state, sizeof(mp_code_state_t));
+                #endif
+                code_state = new_code_state;
+                size_t n_state = code_state->n_state;
+                fastn = &code_state->state[n_state - 1];
+                exc_stack = (mp_exc_stack_t*)(code_state->state + n_state);
+                // variables that are visible to the exception handler (declared volatile)
+                exc_sp = MP_CODE_STATE_EXC_SP_IDX_TO_PTR(exc_stack, code_state->exc_sp_idx); // stack grows up, exc_sp points to top of stack
+                goto unwind_loop;
+
+            #endif
             } else {
                 // propagate exception to higher level
-                // TODO what to do about ip and sp? they don't really make sense at this point
-                fastn[0] = nlr.ret_val; // must put exception here because sp is invalid
+                // Note: ip and sp don't have usable values at this point
+                code_state->state[0] = MP_OBJ_FROM_PTR(nlr.ret_val); // put exception here because sp is invalid
+                FRAME_LEAVE();
                 return MP_VM_RETURN_EXCEPTION;
             }
         }

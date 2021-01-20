@@ -9,7 +9,9 @@ recursiveloop(char *pc, const char *sp, Subject *input, const char **subp, int n
 {
 	const char *old;
 	int off;
-	
+
+	re1_5_stack_chk();
+
 	for(;;) {
 		if(inst_is_consumer(*pc)) {
 			// If we need to match a character, but there's none left, it's fail
@@ -20,6 +22,7 @@ recursiveloop(char *pc, const char *sp, Subject *input, const char **subp, int n
 		case Char:
 			if(*sp != *pc++)
 				return 0;
+			MP_FALLTHROUGH
 		case Any:
 			sp++;
 			continue;
@@ -28,6 +31,12 @@ recursiveloop(char *pc, const char *sp, Subject *input, const char **subp, int n
 			if (!_re1_5_classmatch(pc, sp))
 				return 0;
 			pc += *(unsigned char*)pc * 2 + 1;
+			sp++;
+			continue;
+                case NamedClass:
+			if (!_re1_5_namedclassmatch(pc, sp))
+				return 0;
+			pc++;
 			sp++;
 			continue;
 		case Match:

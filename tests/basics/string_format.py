@@ -1,11 +1,9 @@
-# Change the following to True to get a much more comprehensive set of tests
-# to run, albeit, which take considerably longer.
-
-full_tests = False
+# basic functionality test for {} format string
 
 def test(fmt, *args):
     print('{:8s}'.format(fmt) + '>' +  fmt.format(*args) + '<')
 
+test("}}{{")
 test("{}-{}", 1, [4, 5])
 test("{0}-{1}", 1, [4, 5])
 test("{1}-{0}", 1, [4, 5])
@@ -40,6 +38,7 @@ test("{:#4X}", 0)
 test("{:<6s}", "ab")
 test("{:>6s}", "ab")
 test("{:^6s}", "ab")
+test("{:.1s}", "ab")
 
 test("{: <6d}", 123)
 test("{: <6d}", -123)
@@ -60,61 +59,24 @@ test("{:@<6d}",  -123)
 test("{:@=6d}",  -123)
 test("{:06d}",  -123)
 
-def test_fmt(conv, fill, alignment, sign, prefix, width, precision, type, arg):
-    fmt = '{'
-    if conv:
-        fmt += '!'
-        fmt += conv
-    fmt += ':'
-    if alignment:
-        fmt += fill
-        fmt += alignment
-    fmt += sign
-    fmt += prefix
-    fmt += width
-    if precision:
-        fmt += '.'
-        fmt += precision
-    fmt += type
-    fmt += '}'
-    test(fmt,  arg)
-    if fill == '0' and alignment == '=':
-        fmt = '{:'
-        fmt += sign
-        fmt += prefix
-        fmt += width
-        if precision:
-            fmt += '.'
-            fmt += precision
-        fmt += type
-        fmt += '}'
-        test(fmt, arg)
+test("{:>20}", "foo")
+test("{:^20}", "foo")
+test("{:<20}", "foo")
 
-int_nums = (-1234, -123, -12, -1, 0, 1, 12, 123, 1234, True, False)
-int_nums2 = (-12, -1, 0, 1, 12, True, False)
+# formatting bool as int
+test('{:d}', False)
+test('{:20}', False)
+test('{:d}', True)
+test('{:20}', True)
 
-if full_tests:
-    for type in ('', 'b', 'd', 'o', 'x', 'X'):
-        for width in ('', '1', '3', '5', '7'):
-            for alignment in ('', '<', '>', '=', '^'):
-                for fill in ('', ' ', '0', '@'):
-                    for sign in ('', '+', '-', ' '):
-                        for prefix in ('', '#'):
-                            for num in int_nums:
-                                test_fmt('', fill, alignment, sign, prefix, width, '', type, num)
+# nested format specifiers
+print("{:{}}".format(123, '#>10'))
+print("{:{}{}{}}".format(123, '#', '>', '10'))
+print("{0:{1}{2}}".format(123, '#>', '10'))
+print("{text:{align}{width}}".format(text="foo", align="<", width=20))
+print("{text:{align}{width}}".format(text="foo", align="^", width=10))
+print("{text:{align}{width}}".format(text="foo", align=">", width=30))
 
-if full_tests:
-    for width in ('', '1', '2'):
-        for alignment in ('', '<', '>', '^'):
-            for fill in ('', ' ', '0', '@'):
-                test_fmt('', fill, alignment, '', '', width, '', 'c', 48)
-
-if full_tests:
-    for conv in ('', 'r', 's'):
-        for width in ('', '1', '4', '10'):
-            for alignment in ('', '<', '>', '^'):
-                for fill in ('', ' ', '0', '@'):
-                    for str in ('', 'a', 'bcd', 'This is a test with a longer string'):
-                        test_fmt(conv, fill, alignment, '', '', width, '', 's', str)
-
-# TODO Add tests for erroneous format strings.
+print("{foo}/foo".format(foo="bar"))
+print("{}".format(123, foo="bar"))
+print("{}-{foo}".format(123, foo="bar"))

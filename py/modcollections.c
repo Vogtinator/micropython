@@ -1,5 +1,5 @@
 /*
- * This file is part of the Micro Python project, http://micropython.org/
+ * This file is part of the MicroPython project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
@@ -24,25 +24,26 @@
  * THE SOFTWARE.
  */
 
-#include "mpconfig.h"
-#include "misc.h"
-#include "qstr.h"
-#include "obj.h"
-#include "builtin.h"
+#include "py/builtin.h"
 
 #if MICROPY_PY_COLLECTIONS
 
-STATIC const mp_map_elem_t mp_module_collections_globals_table[] = {
-    { MP_OBJ_NEW_QSTR(MP_QSTR___name__), MP_OBJ_NEW_QSTR(MP_QSTR__collections) },
-    { MP_OBJ_NEW_QSTR(MP_QSTR_namedtuple), (mp_obj_t)&mp_namedtuple_obj },
+STATIC const mp_rom_map_elem_t mp_module_collections_globals_table[] = {
+    { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_ucollections) },
+    #if MICROPY_PY_COLLECTIONS_DEQUE
+    { MP_ROM_QSTR(MP_QSTR_deque), MP_ROM_PTR(&mp_type_deque) },
+    #endif
+    { MP_ROM_QSTR(MP_QSTR_namedtuple), MP_ROM_PTR(&mp_namedtuple_obj) },
+    #if MICROPY_PY_COLLECTIONS_ORDEREDDICT
+    { MP_ROM_QSTR(MP_QSTR_OrderedDict), MP_ROM_PTR(&mp_type_ordereddict) },
+    #endif
 };
 
 STATIC MP_DEFINE_CONST_DICT(mp_module_collections_globals, mp_module_collections_globals_table);
 
 const mp_obj_module_t mp_module_collections = {
     .base = { &mp_type_module },
-    .name = MP_QSTR__collections,
-    .globals = (mp_obj_dict_t*)&mp_module_collections_globals,
+    .globals = (mp_obj_dict_t *)&mp_module_collections_globals,
 };
 
 #endif // MICROPY_PY_COLLECTIONS

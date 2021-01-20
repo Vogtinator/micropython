@@ -1,3 +1,6 @@
+print(int(False))
+print(int(True))
+
 print(int(0))
 print(int(1))
 print(int(+1))
@@ -33,6 +36,7 @@ print(int('11', 16))
 print(int('11', 8))
 print(int('11', 2))
 print(int('11', 36))
+print(int('xyz', 36))
 print(int('0o123', 0))
 print(int('8388607'))
 print(int('0x123', 16))
@@ -64,7 +68,6 @@ test('  1' + chr(2) + '  ', 0)
 test('', 0)
 test(' ', 0)
 test('  \t\t  ', 0)
-test("\u0200", 0)
 test('0x', 16)
 test('0x', 0)
 test('0o', 8)
@@ -75,3 +78,13 @@ test('0b2', 2)
 test('0o8', 8)
 test('0xg', 16)
 test('1 1', 16)
+test('123', 37)
+
+# check that we don't parse this as a floating point number
+print(0x1e+1)
+
+# can't convert list to int
+try:
+    int([])
+except TypeError:
+    print("TypeError")

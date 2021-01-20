@@ -1,4 +1,8 @@
-import uctypes
+try:
+    import uctypes
+except ImportError:
+    print("SKIP")
+    raise SystemExit
 
 S1 = {}
 assert uctypes.sizeof(S1) == 0
@@ -24,15 +28,12 @@ S5 = {
     "b": uctypes.UINT32 | 4,
     "c": uctypes.UINT8 | 8,
     "d": uctypes.UINT32 | 0,
-    "sub": (4, {
-        "b0": uctypes.UINT8 | 0,
-        "b1": uctypes.UINT8 | 1,
-    }),
+    "sub": (4, {"b0": uctypes.UINT8 | 0, "b1": uctypes.UINT8 | 1}),
 }
 
 assert uctypes.sizeof(S5) == 12
 
-s5 = uctypes.struct(S5, 0)
+s5 = uctypes.struct(0, S5)
 assert uctypes.sizeof(s5) == 12
 assert uctypes.sizeof(s5.sub) == 2
 

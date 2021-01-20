@@ -1,9 +1,9 @@
 /*
- * This file is part of the Micro Python project, http://micropython.org/
+ * This file is part of the MicroPython project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
- * Copyright (c) 2013, 2014 Damien P. George
+ * Copyright (c) 2013-2019 Damien P. George
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,8 +23,25 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+#ifndef MICROPY_INCLUDED_PY_OBJMODULE_H
+#define MICROPY_INCLUDED_PY_OBJMODULE_H
 
-void mp_module_init(void);
-void mp_module_deinit(void);
+#include "py/obj.h"
+
+extern const mp_map_t mp_builtin_module_map;
+
 mp_obj_t mp_module_get(qstr module_name);
 void mp_module_register(qstr qstr, mp_obj_t module);
+
+mp_obj_t mp_module_search_umodule(const char *module_str);
+
+#if MICROPY_MODULE_BUILTIN_INIT
+void mp_module_call_init(qstr module_name, mp_obj_t module_obj);
+#else
+static inline void mp_module_call_init(qstr module_name, mp_obj_t module_obj) {
+    (void)module_name;
+    (void)module_obj;
+}
+#endif
+
+#endif // MICROPY_INCLUDED_PY_OBJMODULE_H

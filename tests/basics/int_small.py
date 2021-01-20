@@ -24,6 +24,17 @@ print(-1073741823)
 
 # Operations tests
 
+# compile-time constexprs
+print(1 + 3)
+print(3 - 2)
+print(2 * 3)
+print(1 & 3)
+print(1 | 2)
+print(1 ^ 3)
+print(+3)
+print(-3)
+print(~3)
+
 a = 0x3fffff
 print(a)
 a *= 0x10
@@ -49,6 +60,15 @@ print(a)
 # This would overflow
 #a -= 1
 
+# negative shifts are not allowed
+try:
+    a << -1
+except ValueError:
+    print("ValueError")
+try:
+    a >> -1
+except ValueError:
+    print("ValueError")
 
 # Shifts to big amounts are undefined behavior in C and is CPU-specific
 

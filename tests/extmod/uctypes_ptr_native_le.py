@@ -1,9 +1,14 @@
-import sys
-import uctypes
+import usys
 
-if sys.byteorder != "little":
+try:
+    import uctypes
+except ImportError:
     print("SKIP")
-    sys.exit()
+    raise SystemExit
+
+if usys.byteorder != "little":
+    print("SKIP")
+    raise SystemExit
 
 
 desc = {
@@ -15,9 +20,9 @@ desc = {
 bytes = b"01"
 
 addr = uctypes.addressof(bytes)
-buf = addr.to_bytes(uctypes.sizeof(desc))
+buf = addr.to_bytes(uctypes.sizeof(desc), "little")
 
-S = uctypes.struct(desc, uctypes.addressof(buf), uctypes.NATIVE)
+S = uctypes.struct(uctypes.addressof(buf), desc, uctypes.NATIVE)
 
 print(S.ptr[0])
 assert S.ptr[0] == ord("0")
@@ -26,6 +31,6 @@ assert S.ptr[1] == ord("1")
 print(hex(S.ptr16[0]))
 assert hex(S.ptr16[0]) == "0x3130"
 print(S.ptr2[0].b, S.ptr2[1].b)
-print (S.ptr2[0].b, S.ptr2[1].b)
+print(S.ptr2[0].b, S.ptr2[1].b)
 print(hex(S.ptr16[0]))
 assert (S.ptr2[0].b, S.ptr2[1].b) == (48, 49)

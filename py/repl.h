@@ -1,5 +1,5 @@
 /*
- * This file is part of the Micro Python project, http://micropython.org/
+ * This file is part of the MicroPython project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
@@ -23,7 +23,16 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+#ifndef MICROPY_INCLUDED_PY_REPL_H
+#define MICROPY_INCLUDED_PY_REPL_H
+
+#include "py/mpconfig.h"
+#include "py/misc.h"
+#include "py/mpprint.h"
 
 #if MICROPY_HELPER_REPL
 bool mp_repl_continue_with_input(const char *input);
+size_t mp_repl_autocomplete(const char *str, size_t len, const mp_print_t *print, const char **compl_str);
 #endif
+
+#endif // MICROPY_INCLUDED_PY_REPL_H

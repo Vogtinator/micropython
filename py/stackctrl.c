@@ -1,5 +1,5 @@
 /*
- * This file is part of the Micro Python project, http://micropython.org/
+ * This file is part of the MicroPython project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
@@ -24,39 +24,33 @@
  * THE SOFTWARE.
  */
 
-#include "mpconfig.h"
-#include "misc.h"
-#include "nlr.h"
-#include "qstr.h"
-#include "obj.h"
-#include "runtime.h"
-#include "stackctrl.h"
-
-// Stack top at the start of program
-char *stack_top;
+#include "py/runtime.h"
+#include "py/stackctrl.h"
 
 void mp_stack_ctrl_init(void) {
     volatile int stack_dummy;
-    stack_top = (char*)&stack_dummy;
+    MP_STATE_THREAD(stack_top) = (char *)&stack_dummy;
+}
+
+void mp_stack_set_top(void *top) {
+    MP_STATE_THREAD(stack_top) = top;
 }
 
 mp_uint_t mp_stack_usage(void) {
     // Assumes descending stack
     volatile int stack_dummy;
-    return stack_top - (char*)&stack_dummy;
+    return MP_STATE_THREAD(stack_top) - (char *)&stack_dummy;
 }
 
 #if MICROPY_STACK_CHECK
 
-static mp_uint_t stack_limit = 10240;
-
 void mp_stack_set_limit(mp_uint_t limit) {
-    stack_limit = limit;
+    MP_STATE_THREAD(stack_limit) = limit;
 }
 
 void mp_stack_check(void) {
-    if (mp_stack_usage() >= stack_limit) {
-        nlr_raise(mp_obj_new_exception_msg(&mp_type_RuntimeError, "maximum recursion depth exceeded"));
+    if (mp_stack_usage() >= MP_STATE_THREAD(stack_limit)) {
+        mp_raise_recursion_depth();
     }
 }
 
