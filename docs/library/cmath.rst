@@ -4,8 +4,13 @@
 .. module:: cmath
    :synopsis: mathematical functions for complex numbers
 
-The ``cmath`` module provides some basic mathematical funtions for
+|see_cpython_module| :mod:`python:cmath`.
+
+The ``cmath`` module provides some basic mathematical functions for
 working with complex numbers.
+
+Availability: not available on WiPy and ESP8266. Floating point support
+required for this module.
 
 Functions
 ---------

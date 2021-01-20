@@ -1,5 +1,5 @@
 /*
- * This file is part of the Micro Python project, http://micropython.org/
+ * This file is part of the MicroPython project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
@@ -23,5 +23,13 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+#ifndef MICROPY_INCLUDED_PY_FORMATFLOAT_H
+#define MICROPY_INCLUDED_PY_FORMATFLOAT_H
 
-int format_float(float f, char *buf, size_t bufSize, char fmt, int prec, char sign);
+#include "py/mpconfig.h"
+
+#if MICROPY_PY_BUILTINS_FLOAT
+int mp_format_float(mp_float_t f, char *buf, size_t bufSize, char fmt, int prec, char sign);
+#endif
+
+#endif // MICROPY_INCLUDED_PY_FORMATFLOAT_H

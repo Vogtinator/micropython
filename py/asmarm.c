@@ -1,5 +1,5 @@
 /*
- * This file is part of the Micro Python project, http://micropython.org/
+ * This file is part of the MicroPython project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
@@ -29,99 +29,40 @@
 #include <assert.h>
 #include <string.h>
 
-#include "mpconfig.h"
-#include "misc.h"
-#include "asmarm.h"
+#include "py/mpconfig.h"
 
 // wrapper around everything in this file
 #if MICROPY_EMIT_ARM
 
+#include "py/asmarm.h"
+
 #define SIGNED_FIT24(x) (((x) & 0xff800000) == 0) || (((x) & 0xff000000) == 0xff000000)
 
-struct _asm_arm_t {
-    uint pass;
-    mp_uint_t code_offset;
-    mp_uint_t code_size;
-    byte *code_base;
-    byte dummy_data[4];
-
-    mp_uint_t max_num_labels;
-    mp_uint_t *label_offsets;
-    uint push_reglist;
-    uint stack_adjust;
-};
-
-asm_arm_t *asm_arm_new(uint max_num_labels) {
-    asm_arm_t *as;
-
-    as = m_new0(asm_arm_t, 1);
-    as->max_num_labels = max_num_labels;
-    as->label_offsets = m_new(mp_uint_t, max_num_labels);
-
-    return as;
-}
-
-void asm_arm_free(asm_arm_t *as, bool free_code) {
-    if (free_code) {
-        MP_PLAT_FREE_EXEC(as->code_base, as->code_size);
-    }
-    m_del(mp_uint_t, as->label_offsets, as->max_num_labels);
-    m_del_obj(asm_arm_t, as);
-}
-
-void asm_arm_start_pass(asm_arm_t *as, uint pass) {
-    as->pass = pass;
-    as->code_offset = 0;
-    if (pass == ASM_ARM_PASS_COMPUTE) {
-        memset(as->label_offsets, -1, as->max_num_labels * sizeof(mp_uint_t));
-    }
-}
-
 void asm_arm_end_pass(asm_arm_t *as) {
-    if (as->pass == ASM_ARM_PASS_COMPUTE) {
-        MP_PLAT_ALLOC_EXEC(as->code_offset, (void**) &as->code_base, &as->code_size);
-        if(as->code_base == NULL) {
-            assert(0);
-        }
-    } else if(as->pass == ASM_ARM_PASS_EMIT) {
-#ifdef __arm__
+    if (as->base.pass == MP_ASM_PASS_EMIT) {
+        #if defined(__linux__) && defined(__GNUC__)
+        char *start = mp_asm_base_get_code(&as->base);
+        char *end = start + mp_asm_base_get_code_size(&as->base);
+        __builtin___clear_cache(start, end);
+        #elif defined(__arm__)
         // flush I- and D-cache
-        asm volatile(
-                "0:"
-                "mrc p15, 0, r15, c7, c10, 3\n"
-                "bne 0b\n"
-                "mov r0, #0\n"
-                "mcr p15, 0, r0, c7, c7, 0\n"
-                : : : "r0", "cc");
-#endif
+        asm volatile (
+            "0:"
+            "mrc p15, 0, r15, c7, c10, 3\n"
+            "bne 0b\n"
+            "mov r0, #0\n"
+            "mcr p15, 0, r0, c7, c7, 0\n"
+            : : : "r0", "cc");
+        #endif
     }
-}
-
-// all functions must go through this one to emit bytes
-// if as->pass < ASM_ARM_PASS_EMIT, then this function only returns a buffer of 4 bytes length
-STATIC byte *asm_arm_get_cur_to_write_bytes(asm_arm_t *as, int num_bytes_to_write) {
-    if (as->pass < ASM_ARM_PASS_EMIT) {
-        as->code_offset += num_bytes_to_write;
-        return as->dummy_data;
-    } else {
-        assert(as->code_offset + num_bytes_to_write <= as->code_size);
-        byte *c = as->code_base + as->code_offset;
-        as->code_offset += num_bytes_to_write;
-        return c;
-    }
-}
-
-uint asm_arm_get_code_size(asm_arm_t *as) {
-    return as->code_size;
-}
-
-void *asm_arm_get_code(asm_arm_t *as) {
-    return as->code_base;
 }
 
 // Insert word into instruction flow
 STATIC void emit(asm_arm_t *as, uint op) {
-    *(uint*)asm_arm_get_cur_to_write_bytes(as, 4) = op;
+    uint8_t *c = mp_asm_base_get_cur_to_write_bytes(&as->base, 4);
+    if (c != NULL) {
+        *(uint32_t *)c = op;
+    }
 }
 
 // Insert word into instruction flow, add "ALWAYS" condition code
@@ -175,6 +116,12 @@ STATIC uint asm_arm_op_sub_reg(uint rd, uint rn, uint rm) {
     return 0x0400000 | (rn << 16) | (rd << 12) | rm;
 }
 
+STATIC uint asm_arm_op_mul_reg(uint rd, uint rm, uint rs) {
+    // mul rd, rm, rs
+    assert(rd != rm);
+    return 0x0000090 | (rd << 16) | (rs << 8) | rm;
+}
+
 STATIC uint asm_arm_op_and_reg(uint rd, uint rn, uint rm) {
     // and rd, rn, rm
     return 0x0000000 | (rn << 16) | (rd << 12) | rm;
@@ -192,7 +139,7 @@ STATIC uint asm_arm_op_orr_reg(uint rd, uint rn, uint rm) {
 
 void asm_arm_bkpt(asm_arm_t *as) {
     // bkpt #0
-    emit_al(as, 0x1200070); 
+    emit_al(as, 0x1200070);
 }
 
 // locals:
@@ -207,10 +154,7 @@ void asm_arm_bkpt(asm_arm_t *as) {
 //  | low address    | high address in RAM
 
 void asm_arm_entry(asm_arm_t *as, int num_locals) {
-
-    if (num_locals < 0) {
-        num_locals = 0;
-    }
+    assert(num_locals >= 0);
 
     as->stack_adjust = 0;
     as->push_reglist = 1 << ASM_ARM_REG_R1
@@ -223,7 +167,7 @@ void asm_arm_entry(asm_arm_t *as, int num_locals) {
         | 1 << ASM_ARM_REG_R8;
 
     // Only adjust the stack if there are more locals than usable registers
-    if(num_locals > 3) {
+    if (num_locals > 3) {
         as->stack_adjust = num_locals * 4;
         // Align stack to 8 bytes
         if (num_locals & 1) {
@@ -245,40 +189,28 @@ void asm_arm_exit(asm_arm_t *as) {
     emit_al(as, asm_arm_op_pop(as->push_reglist | (1 << ASM_ARM_REG_PC)));
 }
 
-void asm_arm_label_assign(asm_arm_t *as, uint label) {
-    assert(label < as->max_num_labels);
-    if (as->pass < ASM_ARM_PASS_EMIT) {
-        // assign label offset
-        assert(as->label_offsets[label] == -1);
-        as->label_offsets[label] = as->code_offset;
-    } else {
-        // ensure label offset has not changed from PASS_COMPUTE to PASS_EMIT
-        assert(as->label_offsets[label] == as->code_offset);
-    }
+void asm_arm_push(asm_arm_t *as, uint reglist) {
+    emit_al(as, asm_arm_op_push(reglist));
 }
 
-void asm_arm_align(asm_arm_t* as, uint align) {
-    // TODO fill unused data with NOPs?
-    as->code_offset = (as->code_offset + align - 1) & (~(align - 1));
-}
-
-void asm_arm_data(asm_arm_t* as, uint bytesize, uint val) {
-    byte *c = asm_arm_get_cur_to_write_bytes(as, bytesize);
-    // only write to the buffer in the emit pass (otherwise we overflow dummy_data)
-    if (as->pass == ASM_ARM_PASS_EMIT) {
-        // little endian
-        for (uint i = 0; i < bytesize; i++) {
-            *c++ = val;
-            val >>= 8;
-        }
-    }
+void asm_arm_pop(asm_arm_t *as, uint reglist) {
+    emit_al(as, asm_arm_op_pop(reglist));
 }
 
 void asm_arm_mov_reg_reg(asm_arm_t *as, uint reg_dest, uint reg_src) {
     emit_al(as, asm_arm_op_mov_reg(reg_dest, reg_src));
 }
 
-void asm_arm_mov_reg_i32(asm_arm_t *as, uint rd, int imm) {
+size_t asm_arm_mov_reg_i32(asm_arm_t *as, uint rd, int imm) {
+    // Insert immediate into code and jump over it
+    emit_al(as, 0x59f0000 | (rd << 12)); // ldr rd, [pc]
+    emit_al(as, 0xa000000); // b pc
+    size_t loc = mp_asm_base_get_code_pos(&as->base);
+    emit(as, imm);
+    return loc;
+}
+
+void asm_arm_mov_reg_i32_optimised(asm_arm_t *as, uint rd, int imm) {
     // TODO: There are more variants of immediate values
     if ((imm & 0xFF) == imm) {
         emit_al(as, asm_arm_op_mov_imm(rd, imm));
@@ -286,10 +218,7 @@ void asm_arm_mov_reg_i32(asm_arm_t *as, uint rd, int imm) {
         // mvn is "move not", not "move negative"
         emit_al(as, asm_arm_op_mvn_imm(rd, ~imm));
     } else {
-        //Insert immediate into code and jump over it
-        emit_al(as, 0x59f0000 | (rd << 12)); // ldr rd, [pc]
-        emit_al(as, 0xa000000); // b pc
-        emit(as, imm);
+        asm_arm_mov_reg_i32(as, rd, imm);
     }
 }
 
@@ -328,6 +257,12 @@ void asm_arm_sub_reg_reg_reg(asm_arm_t *as, uint rd, uint rn, uint rm) {
     emit_al(as, asm_arm_op_sub_reg(rd, rn, rm));
 }
 
+void asm_arm_mul_reg_reg_reg(asm_arm_t *as, uint rd, uint rs, uint rm) {
+    // rs and rm are swapped because of restriction rd!=rm
+    // mul rd, rm, rs
+    emit_al(as, asm_arm_op_mul_reg(rd, rm, rs));
+}
+
 void asm_arm_and_reg_reg_reg(asm_arm_t *as, uint rd, uint rn, uint rm) {
     // and rd, rn, rm
     emit_al(as, asm_arm_op_and_reg(rd, rn, rm));
@@ -348,9 +283,29 @@ void asm_arm_mov_reg_local_addr(asm_arm_t *as, uint rd, int local_num) {
     emit_al(as, asm_arm_op_add_imm(rd, ASM_ARM_REG_SP, local_num << 2));
 }
 
+void asm_arm_mov_reg_pcrel(asm_arm_t *as, uint reg_dest, uint label) {
+    assert(label < as->base.max_num_labels);
+    mp_uint_t dest = as->base.label_offsets[label];
+    mp_int_t rel = dest - as->base.code_offset;
+    rel -= 12 + 8; // adjust for load of rel, and then PC+8 prefetch of add_reg_reg_reg
+
+    // To load rel int reg_dest, insert immediate into code and jump over it
+    emit_al(as, 0x59f0000 | (reg_dest << 12)); // ldr rd, [pc]
+    emit_al(as, 0xa000000); // b pc
+    emit(as, rel);
+
+    // Do reg_dest += PC
+    asm_arm_add_reg_reg_reg(as, reg_dest, reg_dest, ASM_ARM_REG_PC);
+}
+
 void asm_arm_lsl_reg_reg(asm_arm_t *as, uint rd, uint rs) {
     // mov rd, rd, lsl rs
     emit_al(as, 0x1a00010 | (rd << 12) | (rs << 8) | rd);
+}
+
+void asm_arm_lsr_reg_reg(asm_arm_t *as, uint rd, uint rs) {
+    // mov rd, rd, lsr rs
+    emit_al(as, 0x1a00030 | (rd << 12) | (rs << 8) | rd);
 }
 
 void asm_arm_asr_reg_reg(asm_arm_t *as, uint rd, uint rs) {
@@ -358,9 +313,9 @@ void asm_arm_asr_reg_reg(asm_arm_t *as, uint rd, uint rs) {
     emit_al(as, 0x1a00050 | (rd << 12) | (rs << 8) | rd);
 }
 
-void asm_arm_ldr_reg_reg(asm_arm_t *as, uint rd, uint rn) {
-    // ldr rd, [rn]
-    emit_al(as, 0x5900000 | (rn << 16) | (rd << 12));
+void asm_arm_ldr_reg_reg(asm_arm_t *as, uint rd, uint rn, uint byte_offset) {
+    // ldr rd, [rn, #off]
+    emit_al(as, 0x5900000 | (rn << 16) | (rd << 12) | byte_offset);
 }
 
 void asm_arm_ldrh_reg_reg(asm_arm_t *as, uint rd, uint rn) {
@@ -373,9 +328,9 @@ void asm_arm_ldrb_reg_reg(asm_arm_t *as, uint rd, uint rn) {
     emit_al(as, 0x5d00000 | (rn << 16) | (rd << 12));
 }
 
-void asm_arm_str_reg_reg(asm_arm_t *as, uint rd, uint rm) {
-    // str rd, [rm]
-    emit_al(as, 0x5800000 | (rm << 16) | (rd << 12));
+void asm_arm_str_reg_reg(asm_arm_t *as, uint rd, uint rm, uint byte_offset) {
+    // str rd, [rm, #off]
+    emit_al(as, 0x5800000 | (rm << 16) | (rd << 12) | byte_offset);
 }
 
 void asm_arm_strh_reg_reg(asm_arm_t *as, uint rd, uint rm) {
@@ -405,9 +360,9 @@ void asm_arm_strb_reg_reg_reg(asm_arm_t *as, uint rd, uint rm, uint rn) {
 }
 
 void asm_arm_bcc_label(asm_arm_t *as, int cond, uint label) {
-    assert(label < as->max_num_labels);
-    mp_uint_t dest = as->label_offsets[label];
-    mp_int_t rel = dest - as->code_offset;
+    assert(label < as->base.max_num_labels);
+    mp_uint_t dest = as->base.label_offsets[label];
+    mp_int_t rel = dest - as->base.code_offset;
     rel -= 8; // account for instruction prefetch, PC is 8 bytes ahead of this instruction
     rel >>= 2; // in ARM mode the branch target is 32-bit aligned, so the 2 LSB are omitted
 
@@ -422,19 +377,15 @@ void asm_arm_b_label(asm_arm_t *as, uint label) {
     asm_arm_bcc_label(as, ASM_ARM_CC_AL, label);
 }
 
-void asm_arm_bl_ind(asm_arm_t *as, void *fun_ptr, uint fun_id, uint reg_temp) {
-    // If the table offset fits into the ldr instruction
-    if(fun_id < (0x1000 / 4)) {
-        emit_al(as, asm_arm_op_mov_reg(ASM_ARM_REG_LR, ASM_ARM_REG_PC)); // mov lr, pc
-        emit_al(as, 0x597f000 | (fun_id << 2)); // ldr pc, [r7, #fun_id*4]
-        return;
-    }
-    
-    emit_al(as, 0x59f0004 | (reg_temp << 12)); // ldr rd, [pc, #4]
-    // Set lr after fun_ptr
-    emit_al(as, asm_arm_op_add_imm(ASM_ARM_REG_LR, ASM_ARM_REG_PC, 4)); // add lr, pc, #4
-    emit_al(as, asm_arm_op_mov_reg(ASM_ARM_REG_PC, reg_temp)); // mov pc, reg_temp
-    emit(as, (uint) fun_ptr);
+void asm_arm_bl_ind(asm_arm_t *as, uint fun_id, uint reg_temp) {
+    // The table offset should fit into the ldr instruction
+    assert(fun_id < (0x1000 / 4));
+    emit_al(as, asm_arm_op_mov_reg(ASM_ARM_REG_LR, ASM_ARM_REG_PC)); // mov lr, pc
+    emit_al(as, 0x597f000 | (fun_id << 2)); // ldr pc, [r7, #fun_id*4]
+}
+
+void asm_arm_bx_reg(asm_arm_t *as, uint reg_src) {
+    emit_al(as, 0x012fff10 | reg_src);
 }
 
 #endif // MICROPY_EMIT_ARM

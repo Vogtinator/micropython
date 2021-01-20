@@ -5,9 +5,13 @@
 try:
     from collections import namedtuple
 except ImportError:
-    from _collections import namedtuple
+    try:
+        from ucollections import namedtuple
+    except ImportError:
+        print("SKIP")
+        raise SystemExit
 
-_DefragResultBase = namedtuple('DefragResult', 'foo bar')
+_DefragResultBase = namedtuple('DefragResult', [ 'foo', 'bar' ])
 
 class _ResultMixinStr(object):
     def encode(self):

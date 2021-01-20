@@ -1,5 +1,5 @@
 /*
- * This file is part of the Micro Python project, http://micropython.org/
+ * This file is part of the MicroPython project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
@@ -24,79 +24,38 @@
  * THE SOFTWARE.
  */
 
-#include <string.h>
-#include <stdint.h>
 #include <assert.h>
 
-#include "mpconfig.h"
-#include "misc.h"
-#include "qstr.h"
-#include "lexer.h"
-#include "parse.h"
-#include "runtime0.h"
-#include "obj.h"
-#include "emitglue.h"
-#include "scope.h"
-#include "emit.h"
+#include "py/emit.h"
 
-#define EMIT(fun, ...) (emit_method_table->fun(emit, __VA_ARGS__))
+#if MICROPY_ENABLE_COMPILER
 
-void emit_common_load_id(emit_t *emit, const emit_method_table_t *emit_method_table, scope_t *scope, qstr qst) {
-    // assumes pass is greater than 1, ie that all identifiers are defined in the scope
-
-    id_info_t *id = scope_find(scope, qst);
-    assert(id != NULL); // TODO can this ever fail?
-
-    // call the emit backend with the correct code
-    if (id == NULL || id->kind == ID_INFO_KIND_GLOBAL_IMPLICIT) {
-        EMIT(load_name, qst);
-    } else if (id->kind == ID_INFO_KIND_GLOBAL_EXPLICIT) {
-        EMIT(load_global, qst);
-    } else if (id->kind == ID_INFO_KIND_LOCAL) {
-        EMIT(load_fast, qst, id->flags, id->local_num);
-    } else if (id->kind == ID_INFO_KIND_CELL || id->kind == ID_INFO_KIND_FREE) {
-        EMIT(load_deref, qst, id->local_num);
-    } else {
-        assert(0);
+void mp_emit_common_get_id_for_modification(scope_t *scope, qstr qst) {
+    // name adding/lookup
+    id_info_t *id = scope_find_or_add_id(scope, qst, ID_INFO_KIND_GLOBAL_IMPLICIT);
+    if (SCOPE_IS_FUNC_LIKE(scope->kind) && id->kind == ID_INFO_KIND_GLOBAL_IMPLICIT) {
+        // rebind as a local variable
+        id->kind = ID_INFO_KIND_LOCAL;
     }
 }
 
-void emit_common_store_id(emit_t *emit, const emit_method_table_t *emit_method_table, scope_t *scope, qstr qst) {
+void mp_emit_common_id_op(emit_t *emit, const mp_emit_method_table_id_ops_t *emit_method_table, scope_t *scope, qstr qst) {
     // assumes pass is greater than 1, ie that all identifiers are defined in the scope
 
     id_info_t *id = scope_find(scope, qst);
-    assert(id != NULL); // TODO can this ever fail?
+    assert(id != NULL);
 
     // call the emit backend with the correct code
-    if (id == NULL || id->kind == ID_INFO_KIND_GLOBAL_IMPLICIT) {
-        EMIT(store_name, qst);
+    if (id->kind == ID_INFO_KIND_GLOBAL_IMPLICIT) {
+        emit_method_table->global(emit, qst, MP_EMIT_IDOP_GLOBAL_NAME);
     } else if (id->kind == ID_INFO_KIND_GLOBAL_EXPLICIT) {
-        EMIT(store_global, qst);
+        emit_method_table->global(emit, qst, MP_EMIT_IDOP_GLOBAL_GLOBAL);
     } else if (id->kind == ID_INFO_KIND_LOCAL) {
-        EMIT(store_fast, qst, id->local_num);
-    } else if (id->kind == ID_INFO_KIND_CELL || id->kind == ID_INFO_KIND_FREE) {
-        EMIT(store_deref, qst, id->local_num);
+        emit_method_table->local(emit, qst, id->local_num, MP_EMIT_IDOP_LOCAL_FAST);
     } else {
-        assert(0);
+        assert(id->kind == ID_INFO_KIND_CELL || id->kind == ID_INFO_KIND_FREE);
+        emit_method_table->local(emit, qst, id->local_num, MP_EMIT_IDOP_LOCAL_DEREF);
     }
 }
 
-void emit_common_delete_id(emit_t *emit, const emit_method_table_t *emit_method_table, scope_t *scope, qstr qst) {
-    // assumes pass is greater than 1, ie that all identifiers are defined in the scope
-
-    id_info_t *id = scope_find(scope, qst);
-    assert(id != NULL); // TODO can this ever fail?
-
-    // call the emit backend with the correct code
-    if (id == NULL || id->kind == ID_INFO_KIND_GLOBAL_IMPLICIT) {
-        EMIT(delete_name, qst);
-    } else if (id->kind == ID_INFO_KIND_GLOBAL_EXPLICIT) {
-        EMIT(delete_global, qst);
-    } else if (id->kind == ID_INFO_KIND_LOCAL) {
-        EMIT(delete_fast, qst, id->local_num);
-    } else if (id->kind == ID_INFO_KIND_CELL || id->kind == ID_INFO_KIND_FREE) {
-        EMIT(delete_deref, qst, id->local_num);
-    } else {
-        assert(0);
-    }
-}
+#endif // MICROPY_ENABLE_COMPILER

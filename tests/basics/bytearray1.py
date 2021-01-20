@@ -27,4 +27,13 @@ print(bytearray([1]) == b"1")
 print(b"1" == bytearray([1]))
 print(bytearray() == bytearray())
 
+# comparison with other type should return False
+print(bytearray() == 1)
+
 # TODO: other comparisons
+
+# __contains__
+b = bytearray(b"\0foo\0")
+print(b"foo" in b)
+print(b"foo\x01" in b)
+print(b"" in b)

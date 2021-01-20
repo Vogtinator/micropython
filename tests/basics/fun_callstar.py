@@ -14,6 +14,14 @@ foo(1, 2, *[100])
 # Iterator
 foo(*range(3))
 
+# pos then iterator
+foo(1, *range(2, 4))
+
+# an iterator with many elements
+def foo(*rest):
+    print(rest)
+foo(*range(10))
+
 # method calls with *pos
 
 class A:

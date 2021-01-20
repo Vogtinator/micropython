@@ -1,5 +1,5 @@
 /*
- * This file is part of the Micro Python project, http://micropython.org/
+ * This file is part of the MicroPython project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
@@ -24,12 +24,7 @@
  * THE SOFTWARE.
  */
 
-#include "mpconfig.h"
-#include "nlr.h"
-#include "misc.h"
-#include "qstr.h"
-#include "obj.h"
-#include "runtime.h"
+#include "py/obj.h"
 
 typedef struct _mp_obj_cell_t {
     mp_obj_base_t base;
@@ -37,39 +32,40 @@ typedef struct _mp_obj_cell_t {
 } mp_obj_cell_t;
 
 mp_obj_t mp_obj_cell_get(mp_obj_t self_in) {
-    mp_obj_cell_t *self = self_in;
+    mp_obj_cell_t *self = MP_OBJ_TO_PTR(self_in);
     return self->obj;
 }
 
 void mp_obj_cell_set(mp_obj_t self_in, mp_obj_t obj) {
-    mp_obj_cell_t *self = self_in;
+    mp_obj_cell_t *self = MP_OBJ_TO_PTR(self_in);
     self->obj = obj;
 }
 
 #if MICROPY_ERROR_REPORTING == MICROPY_ERROR_REPORTING_DETAILED
-STATIC void cell_print(void (*print)(void *env, const char *fmt, ...), void *env, mp_obj_t o_in, mp_print_kind_t kind) {
-    mp_obj_cell_t *o = o_in;
-    print(env, "<cell %p ", o->obj);
+STATIC void cell_print(const mp_print_t *print, mp_obj_t o_in, mp_print_kind_t kind) {
+    (void)kind;
+    mp_obj_cell_t *o = MP_OBJ_TO_PTR(o_in);
+    mp_printf(print, "<cell %p ", o->obj);
     if (o->obj == MP_OBJ_NULL) {
-        print(env, "(nil)");
+        mp_print_str(print, "(nil)");
     } else {
-        mp_obj_print_helper(print, env, o->obj, PRINT_REPR);
+        mp_obj_print_helper(print, o->obj, PRINT_REPR);
     }
-    print(env, ">");
+    mp_print_str(print, ">");
 }
 #endif
 
-const mp_obj_type_t cell_type = {
+STATIC const mp_obj_type_t mp_type_cell = {
     { &mp_type_type },
     .name = MP_QSTR_, // cell representation is just value in < >
-#if MICROPY_ERROR_REPORTING == MICROPY_ERROR_REPORTING_DETAILED
+    #if MICROPY_ERROR_REPORTING == MICROPY_ERROR_REPORTING_DETAILED
     .print = cell_print,
-#endif
+    #endif
 };
 
 mp_obj_t mp_obj_new_cell(mp_obj_t obj) {
     mp_obj_cell_t *o = m_new_obj(mp_obj_cell_t);
-    o->base.type = &cell_type;
+    o->base.type = &mp_type_cell;
     o->obj = obj;
-    return o;
+    return MP_OBJ_FROM_PTR(o);
 }

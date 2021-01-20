@@ -1,3 +1,16 @@
+# literals
+print(b'123')
+print(br'123')
+print(rb'123')
+print(b'\u1234')
+
+# construction
+print(bytes())
+print(bytes(b'abc'))
+
+# make sure empty bytes is converted correctly
+print(str(bytes(), 'utf-8'))
+
 a = b"123"
 print(a)
 print(str(a))
@@ -37,3 +50,15 @@ print(bytes(range(5)))
 x = b"\xff\x8e\xfe}\xfd\x7f"
 print(len(x))
 print(x[0], x[1], x[2], x[3])
+
+# Make sure init values are not mistreated as unicode chars
+# For sequence of known len
+print(bytes([128, 255]))
+# For sequence of unknown len
+print(bytes(iter([128, 255])))
+
+# Shouldn't be able to make bytes with negative length
+try:
+    bytes(-1)
+except ValueError:
+    print('ValueError')

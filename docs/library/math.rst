@@ -4,10 +4,15 @@
 .. module:: math
    :synopsis: mathematical functions
 
-The ``math`` module provides some basic mathematical funtions for
+|see_cpython_module| :mod:`python:math`.
+
+The ``math`` module provides some basic mathematical functions for
 working with floating-point numbers.
 
 *Note:* On the pyboard, floating-point numbers have 32-bit precision.
+
+Availability: not available on WiPy. Floating point support required
+for this module.
 
 Functions
 ---------
@@ -90,7 +95,10 @@ Functions
 
 .. function:: frexp(x)
 
-   Converts a floating-point number to fractional and integral components.
+   Decomposes a floating-point number into its mantissa and exponent.
+   The returned value is the tuple ``(m, e)`` such that ``x == m * 2**e``
+   exactly.  If ``x == 0`` then the function returns ``(0.0, 0)``, otherwise
+   the relation ``0.5 <= abs(m) < 1`` holds.
 
 .. function:: gamma(x)
 

@@ -1,5 +1,5 @@
 /*
- * This file is part of the Micro Python project, http://micropython.org/
+ * This file is part of the MicroPython project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
@@ -26,9 +26,7 @@
 
 #include <stdint.h>
 
-#include "mpconfig.h"
-#include "misc.h"
-#include "unicode.h"
+#include "py/unicode.h"
 
 // attribute flags
 #define FL_PRINT (0x01)
@@ -37,14 +35,17 @@
 #define FL_ALPHA (0x08)
 #define FL_UPPER (0x10)
 #define FL_LOWER (0x20)
+#define FL_XDIGIT (0x40)
 
 // shorthand character attributes
 #define AT_PR (FL_PRINT)
 #define AT_SP (FL_SPACE | FL_PRINT)
-#define AT_DI (FL_DIGIT | FL_PRINT)
+#define AT_DI (FL_DIGIT | FL_PRINT | FL_XDIGIT)
 #define AT_AL (FL_ALPHA | FL_PRINT)
 #define AT_UP (FL_UPPER | FL_ALPHA | FL_PRINT)
 #define AT_LO (FL_LOWER | FL_ALPHA | FL_PRINT)
+#define AT_UX (FL_UPPER | FL_ALPHA | FL_PRINT | FL_XDIGIT)
+#define AT_LX (FL_LOWER | FL_ALPHA | FL_PRINT | FL_XDIGIT)
 
 // table of attributes for ascii characters
 STATIC const uint8_t attr[] = {
@@ -56,21 +57,23 @@ STATIC const uint8_t attr[] = {
     AT_PR, AT_PR, AT_PR, AT_PR, AT_PR, AT_PR, AT_PR, AT_PR,
     AT_DI, AT_DI, AT_DI, AT_DI, AT_DI, AT_DI, AT_DI, AT_DI,
     AT_DI, AT_DI, AT_PR, AT_PR, AT_PR, AT_PR, AT_PR, AT_PR,
-    AT_PR, AT_UP, AT_UP, AT_UP, AT_UP, AT_UP, AT_UP, AT_UP,
+    AT_PR, AT_UX, AT_UX, AT_UX, AT_UX, AT_UX, AT_UX, AT_UP,
     AT_UP, AT_UP, AT_UP, AT_UP, AT_UP, AT_UP, AT_UP, AT_UP,
     AT_UP, AT_UP, AT_UP, AT_UP, AT_UP, AT_UP, AT_UP, AT_UP,
     AT_UP, AT_UP, AT_UP, AT_PR, AT_PR, AT_PR, AT_PR, AT_PR,
-    AT_PR, AT_LO, AT_LO, AT_LO, AT_LO, AT_LO, AT_LO, AT_LO,
+    AT_PR, AT_LX, AT_LX, AT_LX, AT_LX, AT_LX, AT_LX, AT_LO,
     AT_LO, AT_LO, AT_LO, AT_LO, AT_LO, AT_LO, AT_LO, AT_LO,
     AT_LO, AT_LO, AT_LO, AT_LO, AT_LO, AT_LO, AT_LO, AT_LO,
     AT_LO, AT_LO, AT_LO, AT_PR, AT_PR, AT_PR, AT_PR, 0
 };
 
-// TODO: Rename to str_get_char
-unichar utf8_get_char(const byte *s) {
 #if MICROPY_PY_BUILTINS_STR_UNICODE
+
+unichar utf8_get_char(const byte *s) {
     unichar ord = *s++;
-    if (!UTF8_IS_NONASCII(ord)) return ord;
+    if (!UTF8_IS_NONASCII(ord)) {
+        return ord;
+    }
     ord &= 0x7F;
     for (unichar mask = 0x40; ord & mask; mask >>= 1) {
         ord &= ~mask;
@@ -79,22 +82,14 @@ unichar utf8_get_char(const byte *s) {
         ord = (ord << 6) | (*s++ & 0x3F);
     }
     return ord;
-#else
-    return *s;
-#endif
 }
 
-// TODO: Rename to str_next_char
 const byte *utf8_next_char(const byte *s) {
-#if MICROPY_PY_BUILTINS_STR_UNICODE
     ++s;
     while (UTF8_IS_CONT(*s)) {
         ++s;
     }
     return s;
-#else
-    return s + 1;
-#endif
 }
 
 mp_uint_t utf8_ptr_to_index(const byte *s, const byte *ptr) {
@@ -108,21 +103,17 @@ mp_uint_t utf8_ptr_to_index(const byte *s, const byte *ptr) {
     return i;
 }
 
-// TODO: Rename to str_charlen
-mp_uint_t unichar_charlen(const char *str, mp_uint_t len)
-{
-#if MICROPY_PY_BUILTINS_STR_UNICODE
-    mp_uint_t charlen = 0;
-    for (const char *top = str + len; str < top; ++str) {
+size_t utf8_charlen(const byte *str, size_t len) {
+    size_t charlen = 0;
+    for (const byte *top = str + len; str < top; ++str) {
         if (!UTF8_IS_CONT(*str)) {
             ++charlen;
         }
     }
     return charlen;
-#else
-    return len;
-#endif
 }
+
+#endif
 
 // Be aware: These unichar_is* functions are actually ASCII-only!
 bool unichar_isspace(unichar c) {
@@ -133,23 +124,27 @@ bool unichar_isalpha(unichar c) {
     return c < 128 && (attr[c] & FL_ALPHA) != 0;
 }
 
+/* unused
 bool unichar_isprint(unichar c) {
     return c < 128 && (attr[c] & FL_PRINT) != 0;
 }
+*/
 
 bool unichar_isdigit(unichar c) {
     return c < 128 && (attr[c] & FL_DIGIT) != 0;
 }
 
 bool unichar_isxdigit(unichar c) {
-    return unichar_isdigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    return c < 128 && (attr[c] & FL_XDIGIT) != 0;
 }
 
-/*
-bool unichar_is_alpha_or_digit(unichar c) {
-    return c < 128 && (attr[c] & (FL_ALPHA | FL_DIGIT)) != 0;
+bool unichar_isident(unichar c) {
+    return c < 128 && ((attr[c] & (FL_ALPHA | FL_DIGIT)) != 0 || c == '_');
 }
-*/
+
+bool unichar_isalnum(unichar c) {
+    return c < 128 && ((attr[c] & (FL_ALPHA | FL_DIGIT)) != 0);
+}
 
 bool unichar_isupper(unichar c) {
     return c < 128 && (attr[c] & FL_UPPER) != 0;
@@ -172,3 +167,45 @@ unichar unichar_toupper(unichar c) {
     }
     return c;
 }
+
+mp_uint_t unichar_xdigit_value(unichar c) {
+    // c is assumed to be hex digit
+    mp_uint_t n = c - '0';
+    if (n > 9) {
+        n &= ~('a' - 'A');
+        n -= ('A' - ('9' + 1));
+    }
+    return n;
+}
+
+#if MICROPY_PY_BUILTINS_STR_UNICODE
+
+bool utf8_check(const byte *p, size_t len) {
+    uint8_t need = 0;
+    const byte *end = p + len;
+    for (; p < end; p++) {
+        byte c = *p;
+        if (need) {
+            if (UTF8_IS_CONT(c)) {
+                need--;
+            } else {
+                // mismatch
+                return 0;
+            }
+        } else {
+            if (c >= 0xc0) {
+                if (c >= 0xf8) {
+                    // mismatch
+                    return 0;
+                }
+                need = (0xe5 >> ((c >> 3) & 0x6)) & 3;
+            } else if (c >= 0x80) {
+                // mismatch
+                return 0;
+            }
+        }
+    }
+    return need == 0; // no pending fragments allowed
+}
+
+#endif

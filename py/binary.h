@@ -1,9 +1,10 @@
 /*
- * This file is part of the Micro Python project, http://micropython.org/
+ * This file is part of the MicroPython project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
- * Copyright (c) 2013, 2014 Damien P. George
+ * Copyright (c) 2014 Paul Sokolovsky
+ * Copyright (c) 2014-2017 Damien P. George
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,16 +24,23 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+#ifndef MICROPY_INCLUDED_PY_BINARY_H
+#define MICROPY_INCLUDED_PY_BINARY_H
+
+#include "py/obj.h"
 
 // Use special typecode to differentiate repr() of bytearray vs array.array('B')
-// (underlyingly they're same).
-#define BYTEARRAY_TYPECODE 0
+// (underlyingly they're same).  Can't use 0 here because that's used to detect
+// type-specification errors due to end-of-string.
+#define BYTEARRAY_TYPECODE 1
 
-int mp_binary_get_size(char struct_type, char val_type, mp_uint_t *palign);
-mp_obj_t mp_binary_get_val_array(char typecode, void *p, mp_uint_t index);
-void mp_binary_set_val_array(char typecode, void *p, mp_uint_t index, mp_obj_t val_in);
-void mp_binary_set_val_array_from_int(char typecode, void *p, mp_uint_t index, mp_int_t val);
-mp_obj_t mp_binary_get_val(char struct_type, char val_type, byte **ptr);
-void mp_binary_set_val(char struct_type, char val_type, mp_obj_t val_in, byte **ptr);
-long long mp_binary_get_int(mp_uint_t size, bool is_signed, bool big_endian, const byte *src);
-void mp_binary_set_int(mp_uint_t val_sz, bool big_endian, byte *dest, mp_uint_t val);
+size_t mp_binary_get_size(char struct_type, char val_type, size_t *palign);
+mp_obj_t mp_binary_get_val_array(char typecode, void *p, size_t index);
+void mp_binary_set_val_array(char typecode, void *p, size_t index, mp_obj_t val_in);
+void mp_binary_set_val_array_from_int(char typecode, void *p, size_t index, mp_int_t val);
+mp_obj_t mp_binary_get_val(char struct_type, char val_type, byte *p_base, byte **ptr);
+void mp_binary_set_val(char struct_type, char val_type, mp_obj_t val_in, byte *p_base, byte **ptr);
+long long mp_binary_get_int(size_t size, bool is_signed, bool big_endian, const byte *src);
+void mp_binary_set_int(size_t val_sz, bool big_endian, byte *dest, mp_uint_t val);
+
+#endif // MICROPY_INCLUDED_PY_BINARY_H

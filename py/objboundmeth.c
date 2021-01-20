@@ -1,5 +1,5 @@
 /*
- * This file is part of the Micro Python project, http://micropython.org/
+ * This file is part of the MicroPython project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
@@ -26,12 +26,8 @@
 
 #include <string.h>
 
-#include "mpconfig.h"
-#include "nlr.h"
-#include "misc.h"
-#include "qstr.h"
-#include "obj.h"
-#include "runtime.h"
+#include "py/obj.h"
+#include "py/runtime.h"
 
 typedef struct _mp_obj_bound_meth_t {
     mp_obj_base_t base;
@@ -40,52 +36,81 @@ typedef struct _mp_obj_bound_meth_t {
 } mp_obj_bound_meth_t;
 
 #if MICROPY_ERROR_REPORTING == MICROPY_ERROR_REPORTING_DETAILED
-STATIC void bound_meth_print(void (*print)(void *env, const char *fmt, ...), void *env, mp_obj_t o_in, mp_print_kind_t kind) {
-    mp_obj_bound_meth_t *o = o_in;
-    print(env, "<bound_method %p ", o);
-    mp_obj_print_helper(print, env, o->self, PRINT_REPR);
-    print(env, ".");
-    mp_obj_print_helper(print, env, o->meth, PRINT_REPR);
-    print(env, ">");
+STATIC void bound_meth_print(const mp_print_t *print, mp_obj_t o_in, mp_print_kind_t kind) {
+    (void)kind;
+    mp_obj_bound_meth_t *o = MP_OBJ_TO_PTR(o_in);
+    mp_printf(print, "<bound_method %p ", o);
+    mp_obj_print_helper(print, o->self, PRINT_REPR);
+    mp_print_str(print, ".");
+    mp_obj_print_helper(print, o->meth, PRINT_REPR);
+    mp_print_str(print, ">");
 }
 #endif
 
-STATIC mp_obj_t bound_meth_call(mp_obj_t self_in, mp_uint_t n_args, mp_uint_t n_kw, const mp_obj_t *args) {
-    mp_obj_bound_meth_t *self = self_in;
-
-    // need to insert self->self before all other args and then call self->meth
-
-    mp_uint_t n_total = n_args + 2 * n_kw;
-    if (n_total <= 4) {
-        // use stack to allocate temporary args array
-        mp_obj_t args2[5];
-        args2[0] = self->self;
-        memcpy(args2 + 1, args, n_total * sizeof(mp_obj_t));
-        return mp_call_function_n_kw(self->meth, n_args + 1, n_kw, &args2[0]);
-    } else {
-        // use heap to allocate temporary args array
-        mp_obj_t *args2 = m_new(mp_obj_t, 1 + n_total);
-        args2[0] = self->self;
-        memcpy(args2 + 1, args, n_total * sizeof(mp_obj_t));
-        mp_obj_t res = mp_call_function_n_kw(self->meth, n_args + 1, n_kw, &args2[0]);
-        m_del(mp_obj_t, args2, 1 + n_total);
-        return res;
+mp_obj_t mp_call_method_self_n_kw(mp_obj_t meth, mp_obj_t self, size_t n_args, size_t n_kw, const mp_obj_t *args) {
+    // need to insert self before all other args and then call meth
+    size_t n_total = n_args + 2 * n_kw;
+    mp_obj_t *args2 = NULL;
+    #if MICROPY_ENABLE_PYSTACK
+    args2 = mp_pystack_alloc(sizeof(mp_obj_t) * (1 + n_total));
+    #else
+    mp_obj_t *free_args2 = NULL;
+    if (n_total > 4) {
+        // try to use heap to allocate temporary args array
+        args2 = m_new_maybe(mp_obj_t, 1 + n_total);
+        free_args2 = args2;
     }
+    if (args2 == NULL) {
+        // (fallback to) use stack to allocate temporary args array
+        args2 = alloca(sizeof(mp_obj_t) * (1 + n_total));
+    }
+    #endif
+    args2[0] = self;
+    memcpy(args2 + 1, args, n_total * sizeof(mp_obj_t));
+    mp_obj_t res = mp_call_function_n_kw(meth, n_args + 1, n_kw, args2);
+    #if MICROPY_ENABLE_PYSTACK
+    mp_pystack_free(args2);
+    #else
+    if (free_args2 != NULL) {
+        m_del(mp_obj_t, free_args2, 1 + n_total);
+    }
+    #endif
+    return res;
 }
 
-const mp_obj_type_t bound_meth_type = {
+STATIC mp_obj_t bound_meth_call(mp_obj_t self_in, size_t n_args, size_t n_kw, const mp_obj_t *args) {
+    mp_obj_bound_meth_t *self = MP_OBJ_TO_PTR(self_in);
+    return mp_call_method_self_n_kw(self->meth, self->self, n_args, n_kw, args);
+}
+
+#if MICROPY_PY_FUNCTION_ATTRS
+STATIC void bound_meth_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest) {
+    if (dest[0] != MP_OBJ_NULL) {
+        // not load attribute
+        return;
+    }
+    // Delegate the load to the method object
+    mp_obj_bound_meth_t *self = MP_OBJ_TO_PTR(self_in);
+    mp_load_method_maybe(self->meth, attr, dest);
+}
+#endif
+
+STATIC const mp_obj_type_t mp_type_bound_meth = {
     { &mp_type_type },
     .name = MP_QSTR_bound_method,
-#if MICROPY_ERROR_REPORTING == MICROPY_ERROR_REPORTING_DETAILED
+    #if MICROPY_ERROR_REPORTING == MICROPY_ERROR_REPORTING_DETAILED
     .print = bound_meth_print,
-#endif
+    #endif
     .call = bound_meth_call,
+    #if MICROPY_PY_FUNCTION_ATTRS
+    .attr = bound_meth_attr,
+    #endif
 };
 
 mp_obj_t mp_obj_new_bound_meth(mp_obj_t meth, mp_obj_t self) {
     mp_obj_bound_meth_t *o = m_new_obj(mp_obj_bound_meth_t);
-    o->base.type = &bound_meth_type;
+    o->base.type = &mp_type_bound_meth;
     o->meth = meth;
     o->self = self;
-    return o;
+    return MP_OBJ_FROM_PTR(o);
 }

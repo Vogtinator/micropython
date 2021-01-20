@@ -19,6 +19,8 @@ print(x)
 x += [2, 1]
 print(x)
 
-print(x[1:])
-print(x[:-1])
-print(x[2:3])
+# unsupported type on RHS of add
+try:
+    [] + None
+except TypeError:
+    print('TypeError')

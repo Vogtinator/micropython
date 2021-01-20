@@ -1,5 +1,5 @@
 /*
- * This file is part of the Micro Python project, http://micropython.org/
+ * This file is part of the MicroPython project, http://micropython.org/
  *
  * The MIT License (MIT)
  *
@@ -23,17 +23,19 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+#ifndef MICROPY_INCLUDED_PY_OBJFUN_H
+#define MICROPY_INCLUDED_PY_OBJFUN_H
+
+#include "py/obj.h"
 
 typedef struct _mp_obj_fun_bc_t {
     mp_obj_base_t base;
     mp_obj_dict_t *globals;         // the context within which this function was defined
-    mp_uint_t n_pos_args : 8;       // number of arguments this function takes
-    mp_uint_t n_kwonly_args : 8;    // number of keyword-only arguments this function takes
-    mp_uint_t n_def_args : 8;       // number of default arguments
-    mp_uint_t has_def_kw_args : 1;  // set if this function has default keyword args
-    mp_uint_t takes_var_args : 1;   // set if this function takes variable args
-    mp_uint_t takes_kw_args : 1;    // set if this function takes keyword args
     const byte *bytecode;           // bytecode for the function
+    const mp_uint_t *const_table;   // constant table
+    #if MICROPY_PY_SYS_SETTRACE
+    const struct _mp_raw_code_t *rc;
+    #endif
     // the following extra_args array is allocated space to take (in order):
     //  - values of positional default args (if any)
     //  - a single slot for default kw args dict (if it has them)
@@ -41,3 +43,7 @@ typedef struct _mp_obj_fun_bc_t {
     //  - a single slot for kw args dict (if it takes them)
     mp_obj_t extra_args[];
 } mp_obj_fun_bc_t;
+
+void mp_obj_fun_bc_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest);
+
+#endif // MICROPY_INCLUDED_PY_OBJFUN_H

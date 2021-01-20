@@ -1,4 +1,4 @@
-# del global
+# del name
 
 x = 1
 print(x)

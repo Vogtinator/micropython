@@ -4,8 +4,7 @@ try:
     frozenset
 except NameError:
     print("SKIP")
-    import sys
-    sys.exit()
+    raise SystemExit
 
 s = frozenset()
 print(s)
@@ -15,3 +14,6 @@ print(s)
 
 s = frozenset({3, 4, 3, 1})
 print(sorted(s))
+
+# frozensets are hashable unlike sets
+print({frozenset("1"): 2})

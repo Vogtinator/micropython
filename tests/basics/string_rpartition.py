@@ -1,3 +1,9 @@
+try:
+    str.partition
+except AttributeError:
+    print("SKIP")
+    raise SystemExit
+
 print("asdf".rpartition('g'))
 print("asdf".rpartition('a'))
 print("asdf".rpartition('s'))
